@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ExecLink",
+  "version": "0.1.0",
+  "identifier": "com.endearqb.execlink",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "ExecLink",
+        "width": 768,
+        "height": 680,
+        "minWidth": 360,
+        "minHeight": 540,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "../src/assets/excelink_symbol_1.ico"
+    ],
+    "windows": {
+      "wix": {
+        "template": "wix/main.wxs",
+        "language": "zh-CN"
+      }
+    },
+    "resources": [
+      "resources/nilesoft.zip"
+    ]
+  }
+}
