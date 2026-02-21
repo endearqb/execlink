@@ -2,6 +2,10 @@
 
 ExecLink 是一个 Windows 11 右键菜单增强工具，用于快速启动常见 AI CLI（Tauri v2 + React + TypeScript + Rust）。
 
+## 界面预览
+
+![ExecLink UI Preview](src/assets/home.png)
+
 ## 核心能力
 
 - 检测 CLI 可用性：`claude` / `codex` / `gemini` / `kimi` / `kimi_web` / `qwencode` / `opencode`
@@ -54,4 +58,4 @@ npm run tauri build
 
 ## 许可证
 
-项目当前未单独声明 License，如需开源发布请补充 `LICENSE` 文件。
+MIT License，详见 `LICENSE`。
