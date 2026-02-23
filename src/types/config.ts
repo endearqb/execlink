@@ -133,6 +133,12 @@ export interface InstallStatus {
   config_root?: string | null;
 }
 
+export interface HkcuMenuGroup {
+  key: string;
+  title: string;
+  roots: string[];
+}
+
 export interface ActionResult {
   ok: boolean;
   code: string;
@@ -144,6 +150,10 @@ export interface CliInstallHint {
   key: CliKey;
   display_name: string;
   install_command: string;
+  uninstall_command: string;
+  auth_command?: string | null;
+  verify_command?: string | null;
+  requires_oauth: boolean;
   docs_url: string;
   official_domain: string;
   publisher: string;
@@ -165,6 +175,37 @@ export interface InstallPrereqStatus {
 export interface InstallLaunchRequest {
   key: CliKey;
   confirmed_remote_script: boolean;
+}
+
+export type QuickSetupPhase =
+  | "idle"
+  | "precheck"
+  | "install"
+  | "detect"
+  | "auth"
+  | "apply_menu"
+  | "fallback"
+  | "done"
+  | "failed";
+
+export interface QuickSetupStatus {
+  key: CliKey | null;
+  phase: QuickSetupPhase;
+  running: boolean;
+  message: string;
+  detail?: string | null;
+}
+
+export interface TerminalOutputEvent {
+  session_id: string;
+  seq: number;
+  stream: string;
+  data: string;
+}
+
+export interface TerminalStateEvent {
+  session_id: string;
+  state: string;
 }
 
 export interface InitialState {

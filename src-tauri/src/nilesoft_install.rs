@@ -15,6 +15,7 @@ use zip::ZipArchive;
 
 const ZIP_NAME: &str = "nilesoft.zip";
 const REGISTER_STATE_NAME: &str = ".register-state.json";
+const NILESOFT_CLSID: &str = "{BAE3934B-8A6A-4BFB-81BD-3FC599A1BAF1}";
 
 #[derive(Debug, Clone)]
 pub enum UnregisterResult {
@@ -169,6 +170,59 @@ fn command_output_detail(stdout: &[u8], stderr: &[u8]) -> String {
     }
 }
 
+fn query_registered_shell_dll_from_registry() -> Option<PathBuf> {
+    let key = format!(r"HKCR\CLSID\{NILESOFT_CLSID}\InprocServer32");
+    let output = Command::new("reg")
+        .args(["query", &key, "/ve"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        let Some((_, value)) = line.split_once("REG_SZ") else {
+            continue;
+        };
+        let path = value.trim();
+        if path.is_empty() {
+            continue;
+        }
+        return Some(PathBuf::from(path));
+    }
+    None
+}
+
+pub fn registered_shell_root_dir() -> Option<PathBuf> {
+    query_registered_shell_dll_from_registry().and_then(|dll| dll.parent().map(|p| p.to_path_buf()))
+}
+
+fn normalize_path_for_compare(path: &Path) -> String {
+    path.to_string_lossy().replace('/', "\\").to_ascii_lowercase()
+}
+
+fn ensure_registration_points_to(shell_exe: &Path) -> AppResult<()> {
+    let expected_root = shell_exe
+        .parent()
+        .ok_or_else(|| format!("shell.exe 路径非法: {}", shell_exe.display()))?;
+    let Some(active_root) = registered_shell_root_dir() else {
+        return Err("注册后未检测到系统 ContextMenuHandler。".to_string());
+    };
+
+    let expected_norm = normalize_path_for_compare(expected_root);
+    let active_norm = normalize_path_for_compare(&active_root);
+    if expected_norm == active_norm {
+        return Ok(());
+    }
+
+    Err(format!(
+        "注册后系统路径仍不一致: active={} current={}",
+        active_root.display(),
+        expected_root.display()
+    ))
+}
+
 fn unzip_to_dir(zip_path: &Path, target: &Path) -> AppResult<()> {
     logging::log_line(&format!("[install] extracting zip: {}", zip_path.display()));
 
@@ -252,6 +306,7 @@ pub fn register_normal(shell_exe: &Path) -> AppResult<()> {
         .map_err(|e| format!("执行注册命令失败: {e}"))?;
 
     if output.status.success() {
+        ensure_registration_points_to(shell_exe)?;
         return Ok(());
     }
 
@@ -267,8 +322,8 @@ pub fn register_elevated(shell_exe: &Path) -> AppResult<()> {
 
     let exe_path = shell_exe.display().to_string().replace('\'', "''");
     let script = format!(
-    "Start-Process -FilePath '{exe_path}' -ArgumentList '-register','-restart' -Verb RunAs -Wait"
-  );
+        "$p = Start-Process -FilePath '{exe_path}' -ArgumentList '-register','-restart' -Verb RunAs -Wait -PassThru; exit $p.ExitCode"
+    );
 
     let output = Command::new("powershell.exe")
         .args([
@@ -282,6 +337,7 @@ pub fn register_elevated(shell_exe: &Path) -> AppResult<()> {
         .map_err(|e| format!("触发提权注册失败: {e}"))?;
 
     if output.status.success() {
+        ensure_registration_points_to(shell_exe)?;
         return Ok(());
     }
 
@@ -346,6 +402,24 @@ pub fn inspect_installation() -> InstallStatus {
         .ok()
         .map(|resolved| resolved.root.display().to_string());
     let register_state = load_register_state(&root);
+
+    if let Some(active_root) = registered_shell_root_dir() {
+        let expected_root = shell.parent().unwrap_or(root.as_path());
+        let active_norm = normalize_path_for_compare(&active_root);
+        let expected_norm = normalize_path_for_compare(expected_root);
+        if active_norm != expected_norm {
+            return InstallStatus::installed_unregistered(
+                format!(
+                    "检测到系统注册目录与当前安装目录不一致：active={} current={}。请点击“提权重试注册”完成迁移。",
+                    active_root.display(),
+                    expected_root.display()
+                ),
+                shell_text,
+                config_root,
+                true,
+            );
+        }
+    }
 
     if let Some(saved) = register_state {
         if saved.registered {

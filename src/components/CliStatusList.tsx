@@ -21,13 +21,16 @@ export function CliStatusList({ statuses }: Props) {
   );
 
   return (
-    <section className="card">
-      <h2>CLI 可用性检测</h2>
-      <ul className="status-list">
+    <section className="rounded-[2rem] border border-[#ddd5c9] bg-[var(--ui-base)] p-4 shadow-[10px_10px_20px_#d5d0c4,-10px_-10px_20px_#ffffff]">
+      <h2 className="mb-3 text-base font-semibold text-[var(--ui-text)]">CLI 可用性检测</h2>
+      <ul className="grid gap-2">
         {rows.map((row) => (
-          <li key={row.title}>
+          <li
+            key={row.title}
+            className="flex items-center justify-between gap-3 rounded-2xl border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-2 text-sm text-[var(--ui-muted)] shadow-[inset_4px_4px_8px_#d5d0c4,inset_-4px_-4px_8px_#ffffff]"
+          >
             <span>{row.title}</span>
-            <strong aria-label={row.ok ? "available" : "missing"}>
+            <strong className="text-base" aria-label={row.ok ? "available" : "missing"}>
               {row.ok ? "✅" : "❌"}
             </strong>
           </li>

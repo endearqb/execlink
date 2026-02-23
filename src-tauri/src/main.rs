@@ -2,6 +2,7 @@
 
 mod commands;
 mod detect;
+mod embedded_terminal;
 mod explorer;
 mod logging;
 mod nilesoft;
@@ -23,12 +24,24 @@ fn main() {
             commands::detect_clis,
             commands::get_install_prereq_status,
             commands::launch_cli_install,
+            commands::launch_cli_auth,
+            commands::run_cli_verify,
+            commands::launch_cli_uninstall,
             commands::open_install_docs,
             commands::open_nodejs_download_page,
+            commands::terminal_ensure_session,
+            commands::terminal_input,
+            commands::terminal_run_script,
+            commands::terminal_resize,
+            commands::terminal_close_session,
             commands::ensure_nilesoft_installed,
             commands::request_elevation_and_register,
             commands::attempt_unregister_nilesoft,
             commands::cleanup_app_data,
+            commands::repair_context_menu_hkcu,
+            commands::remove_context_menu_hkcu,
+            commands::list_context_menu_groups_hkcu,
+            commands::refresh_explorer,
             commands::apply_config,
             commands::activate_now,
             commands::get_diagnostics,

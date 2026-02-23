@@ -4,9 +4,15 @@ use std::{
     process::{Command, Output},
 };
 
-fn evaluate_shell_restart_output(output: &Output) -> AppResult<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellRestartOutcome {
+    Success,
+    Ambiguous,
+}
+
+fn evaluate_shell_restart_output(output: &Output) -> AppResult<ShellRestartOutcome> {
     if output.status.success() {
-        return Ok(());
+        return Ok(ShellRestartOutcome::Success);
     }
 
     let code = output
@@ -16,16 +22,17 @@ fn evaluate_shell_restart_output(output: &Output) -> AppResult<()> {
         .unwrap_or_else(|| "unknown".to_string());
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
 
-    // 在部分环境中 Nilesoft 的 -restart 会返回 1 但无错误输出，仍可视为已触发重载。
+    // 在部分环境中 Nilesoft 的 -restart 会返回 1 且 stderr 为空。
+    // 该状态是否真正生效不稳定，标记为 Ambiguous，交给上层决定是否执行兜底。
     if code == "1" && stderr.is_empty() {
-        logging::log_line("[activate] shell.exe -restart returned code=1 with empty stderr; treat as success");
-        return Ok(());
+        logging::log_line("[activate] shell.exe -restart returned code=1 with empty stderr; mark as ambiguous");
+        return Ok(ShellRestartOutcome::Ambiguous);
     }
 
     Err(format!("shell.exe -restart 返回失败(code={code}): {stderr}"))
 }
 
-pub fn restart_shell(shell_exe: &Path) -> AppResult<()> {
+fn restart_shell(shell_exe: &Path) -> AppResult<ShellRestartOutcome> {
     logging::log_line("[activate] running shell.exe -restart");
     let output = Command::new(shell_exe)
         .arg("-restart")
@@ -52,7 +59,11 @@ pub fn restart_explorer_fallback() -> AppResult<()> {
 
 pub fn activate_now(shell_exe: &Path) -> AppResult<String> {
     match restart_shell(shell_exe) {
-        Ok(_) => Ok("已通过 shell.exe -restart 生效".to_string()),
+        Ok(ShellRestartOutcome::Success) => Ok("已通过 shell.exe -restart 生效".to_string()),
+        Ok(ShellRestartOutcome::Ambiguous) => {
+            restart_explorer_fallback()?;
+            Ok("shell.exe -restart 返回 code=1，已自动重启 Explorer 以确保生效".to_string())
+        }
         Err(primary) => {
             restart_explorer_fallback()?;
             Ok(format!(
@@ -87,9 +98,10 @@ mod tests {
     }
 
     #[test]
-    fn should_treat_code1_with_empty_stderr_as_success() {
+    fn should_mark_code1_with_empty_stderr_as_ambiguous() {
         let output = fake_output(1, "");
-        assert!(evaluate_shell_restart_output(&output).is_ok());
+        let result = evaluate_shell_restart_output(&output).unwrap();
+        assert_eq!(result, ShellRestartOutcome::Ambiguous);
     }
 
     #[test]
@@ -101,6 +113,7 @@ mod tests {
     #[test]
     fn should_succeed_when_exit_code_is_zero() {
         let output = fake_output(0, "");
-        assert!(evaluate_shell_restart_output(&output).is_ok());
+        let result = evaluate_shell_restart_output(&output).unwrap();
+        assert_eq!(result, ShellRestartOutcome::Success);
     }
 }

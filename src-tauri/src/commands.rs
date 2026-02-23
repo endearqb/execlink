@@ -1,14 +1,15 @@
-﻿use std::{
-    collections::BTreeMap,
+use std::{
+    collections::{BTreeMap, HashSet},
     fs,
     path::PathBuf,
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
+use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
 use crate::{
-    detect, explorer, logging, nilesoft, nilesoft_install, terminal,
+    detect, embedded_terminal, explorer, logging, nilesoft, nilesoft_install, terminal,
     state::{
         self, ActionResult, AppConfig, CliInstallHint, CliStatusMap, DiagnosticsInfo, InitialState,
         InstallLaunchRequest, InstallPrereqStatus, InstallStatus,
@@ -27,11 +28,29 @@ const ALLOWED_DOCS_DOMAINS: [&str; 7] = [
 ];
 const NODEJS_DOWNLOAD_URL: &str = "https://nodejs.org/zh-cn/download";
 
+#[derive(Debug, Clone, Serialize)]
+pub struct HkcuMenuGroup {
+    pub key: String,
+    pub title: String,
+    pub roots: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct HkcuMenuGroupRow {
+    key: String,
+    title: String,
+    root: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct CliInstallProfile {
     key: &'static str,
     display_name: &'static str,
     install_command: &'static str,
+    uninstall_command: &'static str,
+    auth_command: Option<&'static str>,
+    verify_command: Option<&'static str>,
+    requires_oauth: bool,
     docs_url: &'static str,
     official_domain: &'static str,
     publisher: &'static str,
@@ -45,6 +64,10 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
         key: "claude",
         display_name: "Claude Code",
         install_command: "irm https://claude.ai/install.ps1 | iex",
+        uninstall_command: r#"Remove-Item -Path "$env:USERPROFILE\.local\bin\claude.exe" -Force -ErrorAction SilentlyContinue; Remove-Item -Path "$env:USERPROFILE\.local\share\claude" -Recurse -Force -ErrorAction SilentlyContinue"#,
+        auth_command: None,
+        verify_command: Some("claude --version"),
+        requires_oauth: false,
         docs_url: "https://code.claude.com/docs/en/quickstart",
         official_domain: "claude.ai",
         publisher: "Anthropic",
@@ -56,6 +79,10 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
         key: "codex",
         display_name: "Codex",
         install_command: "npm install -g @openai/codex",
+        uninstall_command: "npm uninstall -g @openai/codex",
+        auth_command: None,
+        verify_command: Some("codex --version"),
+        requires_oauth: false,
         docs_url: "https://developers.openai.com/codex/cli",
         official_domain: "developers.openai.com",
         publisher: "OpenAI",
@@ -67,6 +94,10 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
         key: "gemini",
         display_name: "Gemini CLI",
         install_command: "npm install -g @google/gemini-cli",
+        uninstall_command: "npm uninstall -g @google/gemini-cli",
+        auth_command: None,
+        verify_command: Some("gemini --version"),
+        requires_oauth: false,
         docs_url: "https://google-gemini.github.io/gemini-cli/",
         official_domain: "google-gemini.github.io",
         publisher: "Google",
@@ -78,6 +109,10 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
         key: "kimi",
         display_name: "Kimi",
         install_command: "Invoke-RestMethod https://code.kimi.com/install.ps1 | Invoke-Expression",
+        uninstall_command: "uv tool uninstall kimi-cli",
+        auth_command: Some("kimi login"),
+        verify_command: Some("kimi -v"),
+        requires_oauth: true,
         docs_url: "https://moonshotai.github.io/kimi-cli/en/guides/getting-started.html",
         official_domain: "code.kimi.com",
         publisher: "Moonshot AI",
@@ -89,6 +124,10 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
         key: "kimi_web",
         display_name: "Kimi Web",
         install_command: "Invoke-RestMethod https://code.kimi.com/install.ps1 | Invoke-Expression",
+        uninstall_command: "uv tool uninstall kimi-cli",
+        auth_command: Some("kimi login"),
+        verify_command: Some("kimi -v"),
+        requires_oauth: true,
         docs_url: "https://moonshotai.github.io/kimi-cli/en/guides/getting-started.html",
         official_domain: "code.kimi.com",
         publisher: "Moonshot AI",
@@ -100,6 +139,10 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
         key: "qwencode",
         display_name: "Qwen Code",
         install_command: "npm install -g @qwen-code/qwen-code@latest",
+        uninstall_command: "npm uninstall -g @qwen-code/qwen-code",
+        auth_command: None,
+        verify_command: Some("qwen --version"),
+        requires_oauth: false,
         docs_url: "https://qwenlm.github.io/qwen-code-docs/getting-started/quickstart.html",
         official_domain: "qwenlm.github.io",
         publisher: "Qwen Team",
@@ -111,6 +154,10 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
         key: "opencode",
         display_name: "OpenCode",
         install_command: "npm install -g opencode-ai",
+        uninstall_command: "npm uninstall -g opencode-ai --no-progress",
+        auth_command: None,
+        verify_command: Some("opencode --version"),
+        requires_oauth: false,
         docs_url: "https://opencode.ai/docs/cli/",
         official_domain: "opencode.ai",
         publisher: "SST",
@@ -181,6 +228,10 @@ fn cli_install_hint(profile: &CliInstallProfile) -> CliInstallHint {
         key: profile.key.to_string(),
         display_name: profile.display_name.to_string(),
         install_command: profile.install_command.to_string(),
+        uninstall_command: profile.uninstall_command.to_string(),
+        auth_command: profile.auth_command.map(|value| value.to_string()),
+        verify_command: profile.verify_command.map(|value| value.to_string()),
+        requires_oauth: profile.requires_oauth,
         docs_url: profile.docs_url.to_string(),
         official_domain: profile.official_domain.to_string(),
         publisher: profile.publisher.to_string(),
@@ -199,6 +250,12 @@ fn find_cli_install_profile(key: &str) -> Option<&'static CliInstallProfile> {
 fn build_install_script(install_command: &str) -> String {
     format!(
         "$ErrorActionPreference='Continue'; {install_command}; Write-Host ''; Write-Host '安装命令已执行，请在该终端确认结果。'"
+    )
+}
+
+fn build_uninstall_script(uninstall_command: &str) -> String {
+    format!(
+        "$ErrorActionPreference='Continue'; {uninstall_command}; Write-Host ''; Write-Host '卸载命令已执行，请在该终端确认结果。'"
     )
 }
 
@@ -226,6 +283,286 @@ fn open_url_in_system_browser(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn escape_ps_single_quoted(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+fn cli_command_for_key(key: &str) -> Option<&'static str> {
+    match key {
+        "claude" => Some("claude"),
+        "codex" => Some("codex"),
+        "gemini" => Some("gemini"),
+        "kimi" => Some("kimi"),
+        "kimi_web" => Some("kimi web"),
+        "qwencode" => Some("qwen"),
+        "opencode" => Some("opencode"),
+        _ => None,
+    }
+}
+
+fn cli_menu_items_for_config(config: &AppConfig) -> Vec<(String, &'static str)> {
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+    for key in &config.cli_order {
+        if !seen.insert(key.as_str()) {
+            continue;
+        }
+        let command = match cli_command_for_key(key.as_str()) {
+            Some(value) => value,
+            None => continue,
+        };
+        let enabled = match key.as_str() {
+            "claude" => config.toggles.claude,
+            "codex" => config.toggles.codex,
+            "gemini" => config.toggles.gemini,
+            "kimi" => config.toggles.kimi,
+            "kimi_web" => config.toggles.kimi_web,
+            "qwencode" => config.toggles.qwencode,
+            "opencode" => config.toggles.opencode,
+            _ => false,
+        };
+        if !enabled {
+            continue;
+        }
+        let title = match key.as_str() {
+            "claude" => config.display_names.claude.clone(),
+            "codex" => config.display_names.codex.clone(),
+            "gemini" => config.display_names.gemini.clone(),
+            "kimi" => config.display_names.kimi.clone(),
+            "kimi_web" => config.display_names.kimi_web.clone(),
+            "qwencode" => config.display_names.qwencode.clone(),
+            "opencode" => config.display_names.opencode.clone(),
+            _ => continue,
+        };
+        items.push((title, command));
+    }
+    items
+}
+
+fn shell_for_hkcu_menu() -> &'static str {
+    if detect::command_exists("pwsh") {
+        "pwsh.exe"
+    } else {
+        "powershell.exe"
+    }
+}
+
+fn build_hkcu_menu_script(config: &AppConfig) -> String {
+    let menu_name = escape_ps_single_quoted(&config.menu_title);
+    let shell = shell_for_hkcu_menu();
+    let items = cli_menu_items_for_config(config);
+    let mut script = vec![
+        "$ErrorActionPreference='Stop'".to_string(),
+        format!("$menuName = '{menu_name}'"),
+        "$roots = @(\"HKCU:\\Software\\Classes\\Directory\\Background\\shell\", \"HKCU:\\Software\\Classes\\Directory\\shell\")".to_string(),
+        "foreach ($root in $roots) {".to_string(),
+        "  $base = \"$root\\$menuName\"".to_string(),
+        "  New-Item -Path $base -Force | Out-Null".to_string(),
+        "  Set-ItemProperty -Path $base -Name 'MUIVerb' -Value $menuName -Force".to_string(),
+        "  Set-ItemProperty -Path $base -Name 'Icon' -Value 'powershell.exe,0' -Force".to_string(),
+        "  Set-ItemProperty -Path $base -Name 'SubCommands' -Value '' -Force".to_string(),
+        "  Remove-Item -Path \"$base\\shell\" -Recurse -Force -ErrorAction SilentlyContinue".to_string(),
+    ];
+
+    for (index, (title, command)) in items.iter().enumerate() {
+        let order = format!("{:02}", index + 1);
+        let title_escaped = escape_ps_single_quoted(title);
+        let launch = format!(
+            "{shell} -NoExit -ExecutionPolicy Bypass -Command \"Set-Location -LiteralPath ''%V''; {command}\""
+        );
+        let launch_escaped = escape_ps_single_quoted(&launch);
+        script.push(format!("  $sub = \"$base\\shell\\{order}.item\""));
+        script.push("  $cmd = \"$sub\\command\"".to_string());
+        script.push("  New-Item -Path $sub -Force | Out-Null".to_string());
+        script.push(format!(
+            "  Set-ItemProperty -Path $sub -Name 'MUIVerb' -Value '{title_escaped}' -Force"
+        ));
+        script.push("  New-Item -Path $cmd -Force | Out-Null".to_string());
+        script.push(format!(
+            "  Set-ItemProperty -Path $cmd -Name '(Default)' -Value '{launch_escaped}' -Force"
+        ));
+    }
+
+    script.push("}".to_string());
+    script.push("Write-Output 'hkcu_menu_applied'".to_string());
+    script.join("; ")
+}
+
+fn build_remove_hkcu_menu_script(menu_title: &str) -> String {
+    let menu_name = escape_ps_single_quoted(menu_title);
+    [
+        "$ErrorActionPreference='Stop'".to_string(),
+        format!("$menuName = '{menu_name}'"),
+        "$targets = @(\"HKCU:\\Software\\Classes\\Directory\\Background\\shell\\$menuName\", \"HKCU:\\Software\\Classes\\Directory\\shell\\$menuName\")".to_string(),
+        "foreach ($target in $targets) { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue }".to_string(),
+        "Write-Output 'hkcu_menu_removed'".to_string(),
+    ]
+    .join("; ")
+}
+
+fn build_list_hkcu_menu_groups_script() -> String {
+    [
+        "$ErrorActionPreference='Stop'".to_string(),
+        "$roots = @('HKCU:\\Software\\Classes\\Directory\\Background\\shell', 'HKCU:\\Software\\Classes\\Directory\\shell')".to_string(),
+        "$rows = New-Object System.Collections.Generic.List[Object]".to_string(),
+        "foreach ($root in $roots) {".to_string(),
+        "  if (!(Test-Path $root)) { continue }".to_string(),
+        "  foreach ($entry in Get-ChildItem -Path $root -ErrorAction SilentlyContinue) {".to_string(),
+        "    $base = $entry.PSPath".to_string(),
+        "    $shellPath = Join-Path $base 'shell'".to_string(),
+        "    if (!(Test-Path $shellPath)) { continue }".to_string(),
+        "    $cmdValues = @()".to_string(),
+        "    foreach ($sub in Get-ChildItem -Path $shellPath -ErrorAction SilentlyContinue) {".to_string(),
+        "      $cmdPath = Join-Path $sub.PSPath 'command'".to_string(),
+        "      if (!(Test-Path $cmdPath)) { continue }".to_string(),
+        "      $val = (Get-ItemProperty -LiteralPath $cmdPath -Name '(Default)' -ErrorAction SilentlyContinue).'(Default)'".to_string(),
+        "      if ($val -is [string] -and $val.Length -gt 0) { $cmdValues += $val }".to_string(),
+        "    }".to_string(),
+        "    if ($cmdValues.Count -eq 0) { continue }".to_string(),
+        "    $joined = ($cmdValues -join \"`n\")".to_string(),
+        "    $hasCliToken = $joined -match '(claude|codex|gemini|kimi|qwen|opencode)'".to_string(),
+        "    $hasExeclinkMarker = ($joined -match \"Set-Location -LiteralPath ''%V'';\") -or ($joined -match '(ExecLink|ExeLink|AI-CLI-Switch|execlink)')".to_string(),
+        "    if (-not ($hasCliToken -and $hasExeclinkMarker)) { continue }".to_string(),
+        "    $muiVerb = (Get-ItemProperty -LiteralPath $base -Name 'MUIVerb' -ErrorAction SilentlyContinue).MUIVerb".to_string(),
+        "    if ([string]::IsNullOrWhiteSpace($muiVerb)) { $muiVerb = $entry.PSChildName }".to_string(),
+        "    $rows.Add([PSCustomObject]@{ key = $entry.PSChildName; title = $muiVerb; root = $root }) | Out-Null".to_string(),
+        "  }".to_string(),
+        "}".to_string(),
+        "if ($rows.Count -eq 0) { Write-Output '[]'; exit 0 }".to_string(),
+        "$json = $rows | Sort-Object key, root -Unique | ConvertTo-Json -Compress -Depth 4".to_string(),
+        "$escaped = [System.Text.RegularExpressions.Regex]::Replace($json, '[^\\u0000-\\u007F]', { param($m) ('\\u{0:x4}' -f [int][char]$m.Value) })".to_string(),
+        "Write-Output $escaped".to_string(),
+    ]
+    .join("; ")
+}
+
+fn parse_hkcu_menu_groups(output: &str) -> Result<Vec<HkcuMenuGroup>, String> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() || trimmed == "null" {
+        return Ok(Vec::new());
+    }
+
+    let rows = if trimmed.starts_with('[') {
+        serde_json::from_str::<Vec<HkcuMenuGroupRow>>(trimmed)
+            .map_err(|error| format!("解析分组列表失败: {error}; raw={trimmed}"))?
+    } else if trimmed.starts_with('{') {
+        vec![
+            serde_json::from_str::<HkcuMenuGroupRow>(trimmed)
+                .map_err(|error| format!("解析分组对象失败: {error}; raw={trimmed}"))?,
+        ]
+    } else {
+        return Err(format!("分组输出格式异常: {trimmed}"));
+    };
+
+    let mut grouped: BTreeMap<String, HkcuMenuGroup> = BTreeMap::new();
+    for row in rows {
+        if row.key.trim().is_empty() {
+            continue;
+        }
+        let entry = grouped.entry(row.key.clone()).or_insert_with(|| HkcuMenuGroup {
+            key: row.key.clone(),
+            title: row.title.clone(),
+            roots: Vec::new(),
+        });
+        if !entry.roots.iter().any(|root| root == &row.root) {
+            entry.roots.push(row.root);
+        }
+        if entry.title.trim().is_empty() && !row.title.trim().is_empty() {
+            entry.title = row.title;
+        }
+    }
+
+    Ok(grouped.into_values().collect())
+}
+
+fn run_powershell_script(script: &str) -> Result<String, String> {
+    fn decode_utf16(bytes: &[u8], little_endian: bool) -> Option<String> {
+        if bytes.len() < 2 {
+            return None;
+        }
+        let mut units = Vec::with_capacity(bytes.len() / 2);
+        let mut index = 0;
+        while index + 1 < bytes.len() {
+            let pair = [bytes[index], bytes[index + 1]];
+            let value = if little_endian {
+                u16::from_le_bytes(pair)
+            } else {
+                u16::from_be_bytes(pair)
+            };
+            units.push(value);
+            index += 2;
+        }
+        Some(String::from_utf16_lossy(&units))
+    }
+
+    fn decode_powershell_bytes(bytes: &[u8]) -> String {
+        if bytes.is_empty() {
+            return String::new();
+        }
+        if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+            return String::from_utf8_lossy(&bytes[3..]).to_string();
+        }
+        if bytes.starts_with(&[0xFF, 0xFE]) {
+            if let Some(text) = decode_utf16(&bytes[2..], true) {
+                return text;
+            }
+        }
+        if bytes.starts_with(&[0xFE, 0xFF]) {
+            if let Some(text) = decode_utf16(&bytes[2..], false) {
+                return text;
+            }
+        }
+        if let Ok(text) = String::from_utf8(bytes.to_vec()) {
+            return text;
+        }
+
+        let even_zero = bytes.iter().step_by(2).filter(|value| **value == 0).count();
+        let odd_zero = bytes
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .filter(|value| **value == 0)
+            .count();
+        let pair_count = bytes.len() / 2;
+        if pair_count > 0 && (odd_zero > pair_count / 3 || even_zero > pair_count / 3) {
+            let little_endian = odd_zero >= even_zero;
+            if let Some(text) = decode_utf16(bytes, little_endian) {
+                return text;
+            }
+        }
+
+        String::from_utf8_lossy(bytes).to_string()
+    }
+
+    let wrapped = format!(
+        "$utf8 = [System.Text.UTF8Encoding]::new($false); [Console]::OutputEncoding = $utf8; $OutputEncoding = $utf8; {script}"
+    );
+    let output = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &wrapped,
+        ])
+        .output()
+        .map_err(|error| format!("执行 PowerShell 脚本失败: {error}"))?;
+
+    let stdout = decode_powershell_bytes(&output.stdout).trim().to_string();
+    let stderr = decode_powershell_bytes(&output.stderr).trim().to_string();
+    if output.status.success() {
+        return Ok(stdout);
+    }
+
+    let detail = match (stdout.is_empty(), stderr.is_empty()) {
+        (false, false) => format!("stdout={stdout}; stderr={stderr}"),
+        (false, true) => format!("stdout={stdout}"),
+        (true, false) => format!("stderr={stderr}"),
+        (true, true) => format!("exit_code={:?}", output.status.code()),
+    };
+    Err(detail)
+}
+
 fn filter_config_toggles_by_detection(config: &AppConfig, detected: &CliStatusMap) -> AppConfig {
     let mut filtered = config.clone();
     filtered.toggles.claude = filtered.toggles.claude && detected.claude;
@@ -236,6 +573,10 @@ fn filter_config_toggles_by_detection(config: &AppConfig, detected: &CliStatusMa
     filtered.toggles.qwencode = filtered.toggles.qwencode && detected.qwencode;
     filtered.toggles.opencode = filtered.toggles.opencode && detected.opencode;
     filtered
+}
+
+fn normalize_path_for_compare(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('/', "\\").to_ascii_lowercase()
 }
 
 #[tauri::command]
@@ -333,6 +674,163 @@ pub fn launch_cli_install(request: InstallLaunchRequest) -> ActionResult {
             }
         }
         Err(error) => ActionResult::err("install_launch_failed", "启动安装失败", error),
+    }
+}
+
+#[tauri::command]
+pub fn launch_cli_auth(key: String) -> ActionResult {
+    let Some(profile) = find_cli_install_profile(&key) else {
+        return ActionResult::err(
+            "install_profile_missing",
+            "启动授权失败",
+            format!("不支持的 CLI key: {key}"),
+        );
+    };
+    let Some(auth_command) = profile.auth_command else {
+        return ActionResult::ok_with_code(
+            "auth_not_required",
+            format!("{} 无需额外授权步骤", profile.display_name),
+        );
+    };
+
+    let script = format!(
+        "$ErrorActionPreference='Continue'; {auth_command}; Write-Host ''; Write-Host '授权命令已执行，请按提示完成登录。'"
+    );
+    let config = state::load_app_config();
+    let launch_plan = terminal::build_launch_plan(&config);
+    let launch = launch_plan.build_install_command(&script);
+
+    match launch_visible_install_terminal(&launch) {
+        Ok(_) => ActionResult {
+            ok: true,
+            code: "auth_launch_started".to_string(),
+            message: format!("已启动 {} 授权终端，请完成登录后返回应用。", profile.display_name),
+            detail: Some(auth_command.to_string()),
+        },
+        Err(error) => ActionResult::err("auth_launch_failed", "启动授权失败", error),
+    }
+}
+
+#[tauri::command]
+pub fn run_cli_verify(key: String) -> ActionResult {
+    let detected = detect::detect_all_clis();
+    let exists = match key.as_str() {
+        "claude" => detected.claude,
+        "codex" => detected.codex,
+        "gemini" => detected.gemini,
+        "kimi" => detected.kimi,
+        "kimi_web" => detected.kimi_web,
+        "qwencode" => detected.qwencode,
+        "opencode" => detected.opencode,
+        _ => {
+            return ActionResult::err(
+                "install_profile_missing",
+                "复检失败",
+                format!("不支持的 CLI key: {key}"),
+            )
+        }
+    };
+
+    if exists {
+        return ActionResult::ok_with_code("verify_detected", "CLI 复检通过，已检测到可执行命令。");
+    }
+
+    let expected = find_cli_install_profile(&key)
+        .and_then(|profile| profile.verify_command)
+        .unwrap_or("where <cli>");
+    ActionResult::err(
+        "verify_missing",
+        "CLI 复检未通过",
+        format!("未检测到命令，建议在终端手动执行验证命令: {expected}"),
+    )
+}
+
+#[tauri::command]
+pub fn terminal_ensure_session(app: AppHandle) -> ActionResult {
+    match embedded_terminal::ensure_session(&app) {
+        Ok(_) => ActionResult::ok_with_code("terminal_ready", "内置终端已就绪"),
+        Err(error) => ActionResult::err("terminal_ready_failed", "内置终端初始化失败", error),
+    }
+}
+
+#[tauri::command]
+pub fn terminal_input(app: AppHandle, data: String) -> ActionResult {
+    match embedded_terminal::write_input(&app, &data) {
+        Ok(_) => ActionResult::ok_with_code("terminal_input_ok", "已写入终端输入"),
+        Err(error) => ActionResult::err("terminal_input_failed", "写入终端输入失败", error),
+    }
+}
+
+#[tauri::command]
+pub fn terminal_run_script(app: AppHandle, script: String) -> ActionResult {
+    match embedded_terminal::run_script(&app, &script) {
+        Ok(_) => ActionResult::ok_with_code("terminal_script_ok", "脚本已发送到内置终端"),
+        Err(error) => ActionResult::err("terminal_script_failed", "执行内置终端脚本失败", error),
+    }
+}
+
+#[tauri::command]
+pub fn terminal_resize(app: AppHandle, cols: u16, rows: u16) -> ActionResult {
+    match embedded_terminal::resize(&app, cols, rows) {
+        Ok(_) => ActionResult::ok_with_code("terminal_resize_ok", "终端尺寸已更新"),
+        Err(error) => ActionResult::err("terminal_resize_failed", "更新终端尺寸失败", error),
+    }
+}
+
+#[tauri::command]
+pub fn terminal_close_session() -> ActionResult {
+    match embedded_terminal::close_session() {
+        Ok(_) => ActionResult::ok_with_code("terminal_closed", "内置终端已关闭"),
+        Err(error) => ActionResult::err("terminal_close_failed", "关闭内置终端失败", error),
+    }
+}
+
+#[tauri::command]
+pub fn launch_cli_uninstall(key: String) -> ActionResult {
+    let Some(profile) = find_cli_install_profile(&key) else {
+        return ActionResult::err(
+            "install_profile_missing",
+            "启动卸载失败",
+            format!("不支持的 CLI key: {key}"),
+        );
+    };
+
+    let script = build_uninstall_script(profile.uninstall_command);
+    let config = state::load_app_config();
+    let launch_plan = terminal::build_launch_plan(&config);
+    let launch = launch_plan.build_install_command(&script);
+    let resolution = launch.resolution.clone();
+
+    match launch_visible_install_terminal(&launch) {
+        Ok(_) => {
+            logging::log_line(&format!(
+                "[uninstall-assist] started key={} requested_terminal={} effective_terminal={} fallback={:?} theme={} install_theme_applied={} command={}",
+                profile.key,
+                resolution.requested_mode,
+                resolution.effective_mode,
+                resolution.fallback_reason,
+                launch_plan.theme_id(),
+                launch_plan.install_theme_applied(),
+                profile.uninstall_command
+            ));
+            let mut detail = profile.uninstall_command.to_string();
+            if let Some(reason) = resolution.fallback_reason {
+                detail.push_str(&format!(
+                    "\nterminal fallback: requested={} effective={} reason={reason}",
+                    resolution.requested_mode, resolution.effective_mode
+                ));
+            }
+            ActionResult {
+                ok: true,
+                code: "uninstall_launch_started".to_string(),
+                message: format!(
+                    "已启动 {} 卸载终端，请在终端中完成交互。卸载完成后请点击“刷新 CLI 检测”确认状态。",
+                    profile.display_name
+                ),
+                detail: Some(detail),
+            }
+        }
+        Err(error) => ActionResult::err("uninstall_launch_failed", "启动卸载失败", error),
     }
 }
 
@@ -498,6 +996,75 @@ pub fn cleanup_app_data(confirm_token: Option<String>) -> ActionResult {
 }
 
 #[tauri::command]
+pub fn repair_context_menu_hkcu(config: AppConfig) -> ActionResult {
+    let normalized = prepare_config_for_save(config, state::load_app_config().runtime);
+    let script = build_hkcu_menu_script(&normalized);
+    match run_powershell_script(&script) {
+        Ok(output) => {
+            logging::log_line(&format!(
+                "[menu-fallback] hkcu menu repaired title={} output={}",
+                normalized.menu_title, output
+            ));
+            ActionResult {
+                ok: true,
+                code: "menu_fallback_applied".to_string(),
+                message: "已应用 HKCU 右键菜单兜底修复".to_string(),
+                detail: Some(output),
+            }
+        }
+        Err(error) => ActionResult::err("menu_fallback_failed", "应用 HKCU 右键菜单失败", error),
+    }
+}
+
+#[tauri::command]
+pub fn remove_context_menu_hkcu(menu_title: Option<String>) -> ActionResult {
+    let title = menu_title
+        .unwrap_or_else(|| state::load_app_config().menu_title)
+        .trim()
+        .to_string();
+    if title.is_empty() {
+        return ActionResult::err("menu_title_invalid", "移除 HKCU 菜单失败", "菜单标题不能为空");
+    }
+    let script = build_remove_hkcu_menu_script(&title);
+    match run_powershell_script(&script) {
+        Ok(output) => {
+            logging::log_line(&format!(
+                "[menu-fallback] hkcu menu removed title={} output={}",
+                title, output
+            ));
+            ActionResult {
+                ok: true,
+                code: "menu_fallback_removed".to_string(),
+                message: "已移除 HKCU 右键菜单兜底项".to_string(),
+                detail: Some(output),
+            }
+        }
+        Err(error) => ActionResult::err("menu_fallback_remove_failed", "移除 HKCU 菜单失败", error),
+    }
+}
+
+#[tauri::command]
+pub fn list_context_menu_groups_hkcu() -> Result<Vec<HkcuMenuGroup>, String> {
+    let script = build_list_hkcu_menu_groups_script();
+    let output = run_powershell_script(&script)?;
+    parse_hkcu_menu_groups(&output)
+}
+
+#[tauri::command]
+pub fn refresh_explorer() -> ActionResult {
+    let script = "taskkill /f /im explorer.exe | Out-Null; Start-Process explorer.exe | Out-Null; Write-Output 'explorer_refreshed'";
+    match run_powershell_script(script) {
+        Ok(output) => ActionResult {
+            ok: true,
+            code: "explorer_refreshed".to_string(),
+            message: "已刷新资源管理器".to_string(),
+            detail: Some(output),
+        },
+        Err(error) => ActionResult::err("explorer_refresh_failed", "刷新资源管理器失败", error),
+    }
+}
+
+#[tauri::command]
 pub fn apply_config(config: AppConfig) -> ActionResult {
     let config = prepare_config_for_save(config, state::load_app_config().runtime);
 
@@ -523,25 +1090,59 @@ pub fn apply_config(config: AppConfig) -> ActionResult {
 
     let detected = detect::detect_all_clis();
     let render_config = filter_config_toggles_by_detection(&config, &detected);
-    match nilesoft::apply_config(&resolved.root, &render_config) {
-        Ok(terminal_resolution) => {
-            let _ = state::mark_apply_success();
-            let mut message = format!(
-                "配置已写入 {}/imports/ai-clis.nss（layout={}，terminal={}）",
-                resolved.root.display(),
-                resolved.layout,
-                terminal_resolution.effective_mode
-            );
-            if terminal_resolution.fallback_reason.is_some() {
-                message.push_str("，已自动回退到可用终端");
-            }
-            ActionResult::ok(message)
-        }
+    let terminal_resolution = match nilesoft::apply_config(&resolved.root, &render_config) {
+        Ok(value) => value,
         Err(error) => {
             let _ = state::mark_runtime_error(format!("apply_config_failed: {error}"));
-            ActionResult::err("apply_failed", "写入配置失败", error)
+            return ActionResult::err("apply_failed", "写入配置失败", error);
+        }
+    };
+
+    let mut written_roots = vec![resolved.root.display().to_string()];
+    if let Some(registered_root) = nilesoft_install::registered_shell_root_dir() {
+        let primary_norm = normalize_path_for_compare(&resolved.root);
+        let registered_norm = normalize_path_for_compare(&registered_root);
+        if primary_norm != registered_norm {
+            logging::log_line(&format!(
+                "[config] registered shell root differs from install root, write both: primary={} registered={}",
+                resolved.root.display(),
+                registered_root.display()
+            ));
+            if let Err(error) = nilesoft::apply_config(&registered_root, &render_config) {
+                let _ = state::mark_runtime_error(format!("apply_registered_root_failed: {error}"));
+                return ActionResult::err(
+                    "apply_registered_root_failed",
+                    "写入配置失败",
+                    format!(
+                        "主路径已写入，但系统当前注册路径写入失败: {}; 错误: {}",
+                        registered_root.display(),
+                        error
+                    ),
+                );
+            }
+            written_roots.push(registered_root.display().to_string());
         }
     }
+
+    let _ = state::mark_apply_success();
+    let mut message = format!(
+        "配置已写入 {}（layout={}，terminal={}）",
+        written_roots
+            .iter()
+            .map(|root| format!("{root}/imports/ai-clis.nss"))
+            .collect::<Vec<_>>()
+            .join("；"),
+        resolved.layout,
+        terminal_resolution.effective_mode
+    );
+    if terminal_resolution.fallback_reason.is_some() {
+        message.push_str("，已自动回退到可用终端");
+    }
+    if written_roots.len() > 1 {
+        message.push_str("；检测到系统注册目录与当前安装目录不一致，已自动双写以确保生效");
+    }
+
+    ActionResult::ok(message)
 }
 
 #[tauri::command]
@@ -753,3 +1354,6 @@ mod tests {
         assert!(!filtered.toggles.opencode);
     }
 }
+
+
+

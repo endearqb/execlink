@@ -6,6 +6,7 @@ import type {
   CliStatusMap,
   DiagnosticsInfo,
   CliKey,
+  HkcuMenuGroup,
   InstallLaunchRequest,
   InstallPrereqStatus,
   InitialState,
@@ -82,10 +83,58 @@ export function launchCliInstall(request: InstallLaunchRequest) {
   return invokeTauri<ActionResult>("launch_cli_install", { request });
 }
 
+export function launchCliAuth(key: CliKey) {
+  return invokeTauri<ActionResult>("launch_cli_auth", { key });
+}
+
+export function runCliVerify(key: CliKey) {
+  return invokeTauri<ActionResult>("run_cli_verify", { key });
+}
+
+export function launchCliUninstall(key: CliKey) {
+  return invokeTauri<ActionResult>("launch_cli_uninstall", { key });
+}
+
 export function openInstallDocs(key: CliKey) {
   return invokeTauri<ActionResult>("open_install_docs", { key });
 }
 
 export function openNodejsDownloadPage() {
   return invokeTauri<ActionResult>("open_nodejs_download_page");
+}
+
+export function terminalEnsureSession() {
+  return invokeTauri<ActionResult>("terminal_ensure_session");
+}
+
+export function terminalInput(data: string) {
+  return invokeTauri<ActionResult>("terminal_input", { data });
+}
+
+export function terminalRunScript(script: string) {
+  return invokeTauri<ActionResult>("terminal_run_script", { script });
+}
+
+export function terminalResize(cols: number, rows: number) {
+  return invokeTauri<ActionResult>("terminal_resize", { cols, rows });
+}
+
+export function terminalCloseSession() {
+  return invokeTauri<ActionResult>("terminal_close_session");
+}
+
+export function repairContextMenuHkcu(config: AppConfig) {
+  return invokeTauri<ActionResult>("repair_context_menu_hkcu", { config });
+}
+
+export function removeContextMenuHkcu(menuTitle?: string) {
+  return invokeTauri<ActionResult>("remove_context_menu_hkcu", { menuTitle });
+}
+
+export function listContextMenuGroupsHkcu() {
+  return invokeTauri<HkcuMenuGroup[]>("list_context_menu_groups_hkcu");
+}
+
+export function refreshExplorer() {
+  return invokeTauri<ActionResult>("refresh_explorer");
 }
