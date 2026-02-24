@@ -165,6 +165,18 @@ function isKimiMirrorInstallKey(key: CliKey) {
 function buildMirrorInstallCommand(installCommand: string) {
   return [
     "$__execlink_prev_uv_default_index = $env:UV_DEFAULT_INDEX",
+    "$__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
+    "if (-not $__execlink_uv_cmd) {",
+    "  Invoke-RestMethod -Uri 'https://astral.sh/uv/install.ps1' | Invoke-Expression",
+    "  $__execlink_uv_bin_dir = Join-Path $HOME '.local\\bin'",
+    "  if (Test-Path $__execlink_uv_bin_dir) {",
+    "    $env:Path = \"$__execlink_uv_bin_dir;$env:Path\"",
+    "  }",
+    "  $__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
+    "}",
+    "if (-not $__execlink_uv_cmd) {",
+    "  throw 'uv not found after installation.'",
+    "}",
     "try {",
     `  $env:UV_DEFAULT_INDEX = '${UV_TUNA_SIMPLE_INDEX_URL}'`,
     `  ${installCommand}`,
