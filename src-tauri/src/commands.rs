@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
 use crate::{
-    detect, embedded_terminal, explorer, logging, nilesoft, nilesoft_install, terminal,
+    detect, embedded_terminal, explorer, logging, nilesoft, nilesoft_install, process_util, terminal,
     state::{
         self, ActionResult, AppConfig, CliInstallHint, CliStatusMap, DiagnosticsInfo, InitialState,
         InstallLaunchRequest, InstallPrereqStatus, InstallStatus,
@@ -260,23 +260,15 @@ fn build_uninstall_script(uninstall_command: &str) -> String {
 }
 
 fn launch_visible_install_terminal(launch: &terminal::SpawnLaunchCommand) -> Result<(), String> {
-    let mut args = vec![
-        "/C".to_string(),
-        "start".to_string(),
-        "".to_string(),
-        launch.executable.clone(),
-    ];
-    args.extend(launch.args.clone());
-
-    Command::new("cmd")
-        .args(&args)
+    Command::new(&launch.executable)
+        .args(&launch.args)
         .spawn()
         .map_err(|error| format!("拉起安装终端失败: {error}"))?;
     Ok(())
 }
 
 fn open_url_in_system_browser(url: &str) -> Result<(), String> {
-    Command::new("cmd")
+    process_util::command_hidden("cmd")
         .args(["/C", "start", "", url])
         .spawn()
         .map_err(|error| format!("拉起系统浏览器失败: {error}"))?;
@@ -537,7 +529,7 @@ fn run_powershell_script(script: &str) -> Result<String, String> {
     let wrapped = format!(
         "$utf8 = [System.Text.UTF8Encoding]::new($false); [Console]::OutputEncoding = $utf8; $OutputEncoding = $utf8; {script}"
     );
-    let output = Command::new("powershell.exe")
+    let output = process_util::command_hidden("powershell.exe")
         .args([
             "-NoProfile",
             "-ExecutionPolicy",
@@ -599,12 +591,14 @@ pub fn detect_clis() -> CliStatusMap {
 
 #[tauri::command]
 pub fn get_install_prereq_status() -> InstallPrereqStatus {
+    let refreshed_path = process_util::refreshed_path_env();
+    let path_ref = refreshed_path.as_deref();
     InstallPrereqStatus {
-        node: detect::command_exists("node"),
-        npm: detect::command_exists("npm"),
-        pwsh: detect::command_exists("pwsh"),
-        winget: detect::command_exists("winget"),
-        wsl: detect::command_exists("wsl"),
+        node: detect::command_exists_with_path("node", path_ref),
+        npm: detect::command_exists_with_path("npm", path_ref),
+        pwsh: detect::command_exists_with_path("pwsh", path_ref),
+        winget: detect::command_exists_with_path("winget", path_ref),
+        wsl: detect::command_exists_with_path("wsl", path_ref),
     }
 }
 

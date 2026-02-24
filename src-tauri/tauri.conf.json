@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ExecLink",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "identifier": "com.endearqb.execlink",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -14,11 +14,14 @@
       {
         "label": "main",
         "title": "ExecLink",
-        "width": 768,
-        "height": 680,
+        "width": 480,
+        "height": 640,
         "minWidth": 360,
         "minHeight": 540,
-        "resizable": true
+        "resizable": true,
+        "transparent": true,
+        "decorations": false,
+        "shadow": false
       }
     ],
     "security": {
@@ -42,3 +45,4 @@
     ]
   }
 }
+

@@ -1,6 +1,7 @@
-﻿import { Tabs, Toast } from "@base-ui/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Tabs, Toast } from "@base-ui/react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow, type Window as TauriWindow } from "@tauri-apps/api/window";
 import {
   activateNow,
   applyConfig,
@@ -25,6 +26,7 @@ import {
   terminalRunScript
 } from "../api/tauri";
 import { CliConfigTable } from "../components/CliConfigTable";
+import { AppConfirmDialog } from "../components/AppConfirmDialog";
 import { QuickSetupWizard } from "../components/QuickSetupWizard";
 import { ToggleRow } from "../components/ToggleRow";
 import appLogo from "../assets/excelink_logo.png";
@@ -76,13 +78,12 @@ const EMPTY_PREREQ: InstallPrereqStatus = {
   wsl: false
 };
 
-type TabKey = "cli" | "menu" | "runtime" | "about";
+type TabKey = "cli" | "menu" | "runtime";
 
 const TABS: Array<{ key: TabKey; title: string }> = [
   { key: "cli", title: "CLI" },
   { key: "menu", title: "菜单" },
-  { key: "runtime", title: "安装/生效" },
-  { key: "about", title: "关于我" }
+  { key: "runtime", title: "维护" }
 ];
 
 const TERMINAL_MODE_OPTIONS: Array<{ value: AppConfig["terminal_mode"]; label: string }> = [
@@ -93,31 +94,52 @@ const TERMINAL_MODE_OPTIONS: Array<{ value: AppConfig["terminal_mode"]; label: s
 ];
 
 const CLEANUP_CONFIRM_TOKEN = "CONFIRM_CLEANUP_EXECLINK";
-const APP_IDENTIFIER = "com.endearqb.execlink";
-const APP_PUBLISHER = "endearqb";
-const APP_VERSION = "0.1.0";
+const APP_VERSION = "0.2.1";
+const GITHUB_REPO_URL = "https://github.com/endearqb/execlink";
 const INSTALL_RECHECK_INTERVAL_MS = 2000;
 const INSTALL_RECHECK_TIMEOUT_MS = 10 * 60 * 1000;
-const OUTSET_LARGE = "shadow-[10px_10px_20px_#d5d0c4,-10px_-10px_20px_#ffffff]";
-const OUTSET_SMALL = "shadow-[5px_5px_10px_#d5d0c4,-5px_-5px_10px_#ffffff]";
-const INSET_SMALL = "shadow-[inset_4px_4px_8px_#d5d0c4,inset_-4px_-4px_8px_#ffffff]";
-const BUTTON_BASE_CLASS = `rounded-2xl border border-[#ddd5c9] px-4 py-2.5 text-sm font-medium outline-none transition-[box-shadow,transform,color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8f8072]/40 active:scale-95 active:shadow-[inset_2px_2px_5px_#d5d0c4,inset_-2px_-2px_5px_#ffffff] disabled:cursor-not-allowed disabled:opacity-60`;
+const OUTSET_LARGE = "shadow-[6px_6px_12px_#d5d0c4,-6px_-6px_12px_#ffffff]";
+const OUTSET_SMALL = "shadow-[3px_3px_6px_#d5d0c4,-3px_-3px_6px_#ffffff]";
+const INSET_SMALL = "shadow-[inset_2px_2px_4px_#d5d0c4,inset_-2px_-2px_4px_#ffffff]";
+const BUTTON_BASE_CLASS = `rounded-[var(--radius-lg)] border border-[#ddd5c9] px-4 py-2.5 text-sm font-medium outline-none transition-[box-shadow,transform,color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8f8072]/40 active:scale-95 active:shadow-[inset_1px_1px_3px_#d5d0c4,inset_-1px_-1px_3px_#ffffff] disabled:cursor-not-allowed disabled:opacity-60`;
 const PRIMARY_BUTTON_CLASS = `${BUTTON_BASE_CLASS} bg-[#e8e1d7] text-[var(--ui-text)] ${OUTSET_SMALL} hover:text-[#665a4f]`;
 const SECONDARY_BUTTON_CLASS = `${BUTTON_BASE_CLASS} bg-[var(--ui-base)] text-[var(--ui-text)] ${OUTSET_SMALL} hover:text-[#665a4f]`;
 const DANGER_BUTTON_CLASS = `${BUTTON_BASE_CLASS} bg-[#ecddd8] text-[#8a4f45] ${OUTSET_SMALL} hover:text-[#7d473e]`;
-const INPUT_CLASS = `w-full rounded-2xl border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-2.5 text-sm text-[var(--ui-text)] outline-none ${INSET_SMALL} transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-[#8f8072]/35 disabled:cursor-not-allowed disabled:opacity-60`;
+const RUNTIME_BUTTON_SIZE_CLASS = "px-3 py-1.5 text-xs";
+const RUNTIME_PRIMARY_BUTTON_CLASS = `${PRIMARY_BUTTON_CLASS} ${RUNTIME_BUTTON_SIZE_CLASS}`;
+const RUNTIME_SECONDARY_BUTTON_CLASS = `${SECONDARY_BUTTON_CLASS} ${RUNTIME_BUTTON_SIZE_CLASS}`;
+const RUNTIME_DANGER_BUTTON_CLASS = `${DANGER_BUTTON_CLASS} ${RUNTIME_BUTTON_SIZE_CLASS}`;
+const HEADER_ACTION_BUTTON_CLASS = `rounded-[var(--radius-sm)] border border-[#ddd5c9] bg-[var(--ui-base)] px-2.5 py-1 text-[11px] font-semibold text-[var(--ui-text)] ${OUTSET_SMALL} outline-none transition-[box-shadow,transform,color] duration-150 hover:text-[#665a4f] focus-visible:ring-2 focus-visible:ring-[#8f8072]/40 active:scale-95 active:shadow-[inset_1px_1px_3px_#d5d0c4,inset_-1px_-1px_3px_#ffffff] disabled:cursor-not-allowed disabled:opacity-60`;
+const HEADER_WINDOW_BUTTON_CLASS = `grid h-6 w-7 place-items-center rounded-[var(--radius-xs)] border border-[#ddd5c9] bg-[var(--ui-base)] text-[var(--ui-muted)] ${OUTSET_SMALL} outline-none transition-[box-shadow,transform,color,background-color] duration-150 hover:text-[var(--ui-text)] focus-visible:ring-2 focus-visible:ring-[#8f8072]/40 active:scale-95 active:shadow-[inset_1px_1px_3px_#d5d0c4,inset_-1px_-1px_3px_#ffffff] disabled:cursor-not-allowed disabled:opacity-60`;
+const INPUT_CLASS = `w-full rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-2.5 text-sm text-[var(--ui-text)] outline-none ${INSET_SMALL} transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-[#8f8072]/35 disabled:cursor-not-allowed disabled:opacity-60`;
 const FIELD_CLASS = "grid gap-1.5";
 const FIELD_LABEL_CLASS = "font-semibold text-[var(--ui-text)]";
 const PANEL_CONTENT_CLASS = "grid gap-4";
 const PANEL_TITLE_CLASS = "text-base font-semibold text-[var(--ui-text)]";
-const PANEL_BLOCK_CLASS = `grid gap-3 rounded-[1.5rem] border border-[#ddd5c9] bg-[var(--ui-base)] p-4 ${INSET_SMALL} max-[540px]:rounded-[1.25rem]`;
+const PANEL_BLOCK_CLASS = `grid gap-3 rounded-[var(--radius-xl)] border border-[#ddd5c9] bg-[var(--ui-base)] p-4 ${INSET_SMALL} max-[420px]:rounded-[var(--radius-lg)]`;
 const TAB_CLASS =
-  "relative flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-full px-4 py-2.5 text-sm font-semibold leading-none text-[var(--ui-muted)] outline-none transition-[box-shadow,transform,color] duration-150 hover:text-[var(--ui-text)] focus-visible:ring-2 focus-visible:ring-[#8f8072]/40 data-[active]:bg-[var(--ui-base)] data-[active]:text-[var(--ui-text)] data-[active]:shadow-[5px_5px_10px_#d5d0c4,-5px_-5px_10px_#ffffff] active:scale-95 active:shadow-[inset_2px_2px_5px_#d5d0c4,inset_-2px_-2px_5px_#ffffff]";
-const TOAST_ROOT_CLASS = `pointer-events-auto flex items-start justify-between gap-2.5 rounded-[1.35rem] border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-2.5 opacity-100 ${OUTSET_SMALL} [--toast-stack-offset:calc(var(--toast-offset-y,0px)+(var(--toast-index,0)*3px))] [transform:translate3d(var(--toast-swipe-movement-x,0px),calc(var(--toast-stack-offset)+var(--toast-swipe-movement-y,0px)),0)_scale(calc(1-(var(--toast-index,0)*0.02)))] transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] will-change-[transform,opacity] data-[starting-style]:opacity-0 data-[starting-style]:[transform:translate3d(0,calc(var(--toast-stack-offset)+14px),0)_scale(0.96)] data-[ending-style]:opacity-0 data-[ending-style]:[transform:translate3d(var(--toast-swipe-movement-x,0px),calc(var(--toast-stack-offset)+10px),0)_scale(0.96)] data-[type=success]:bg-[#e8e1d7] data-[type=error]:bg-[#ecddd8]`;
+  "relative flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-full px-4 py-2.5 text-sm font-semibold leading-none text-[var(--ui-muted)] outline-none transition-[box-shadow,transform,color] duration-150 hover:text-[var(--ui-text)] focus-visible:ring-2 focus-visible:ring-[#8f8072]/40 data-[active]:bg-[var(--ui-base)] data-[active]:text-[var(--ui-text)] data-[active]:shadow-[3px_3px_6px_#d5d0c4,-3px_-3px_6px_#ffffff] active:scale-95 active:shadow-[inset_1px_1px_3px_#d5d0c4,inset_-1px_-1px_3px_#ffffff]";
+const TOAST_ROOT_CLASS = `pointer-events-auto flex items-start justify-between gap-2.5 rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-2.5 opacity-100 ${OUTSET_SMALL} [--toast-stack-offset:calc(var(--toast-offset-y,0px)+(var(--toast-index,0)*3px))] [transform:translate3d(var(--toast-swipe-movement-x,0px),calc(var(--toast-stack-offset)+var(--toast-swipe-movement-y,0px)),0)_scale(calc(1-(var(--toast-index,0)*0.02)))] transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] will-change-[transform,opacity] data-[starting-style]:opacity-0 data-[starting-style]:[transform:translate3d(0,calc(var(--toast-stack-offset)+14px),0)_scale(0.96)] data-[ending-style]:opacity-0 data-[ending-style]:[transform:translate3d(var(--toast-swipe-movement-x,0px),calc(var(--toast-stack-offset)+10px),0)_scale(0.96)] data-[type=success]:bg-[#e8e1d7] data-[type=error]:bg-[#ecddd8]`;
 const TOAST_TITLE_CLASS = "text-[0.92rem] font-bold leading-[1.3] text-[var(--ui-text)] data-[type=error]:text-[#7d473e]";
 const TOAST_DESCRIPTION_CLASS = "m-0 text-xs text-[var(--ui-muted)] data-[type=error]:text-[#8a4f45]";
-const SELECT_CLASS = `w-full appearance-none rounded-2xl border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-2.5 pr-9 text-sm text-[var(--ui-text)] outline-none ${INSET_SMALL} transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-[#8f8072]/35 disabled:cursor-not-allowed disabled:opacity-60`;
+const SELECT_CLASS = `w-full appearance-none rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-2.5 pr-9 text-sm text-[var(--ui-text)] outline-none ${INSET_SMALL} transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-[#8f8072]/35 disabled:cursor-not-allowed disabled:opacity-60`;
 const QUICK_SETUP_DETECT_TIMEOUT_MS = 5 * 60 * 1000;
+const UV_TUNA_SIMPLE_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple";
+
+type InstallLaunchMode = "official" | "mirror";
+
+interface InstallAttemptContext {
+  key: CliKey;
+  expectedDetected: boolean;
+  mode: InstallLaunchMode;
+}
+
+interface InstallLaunchOptions {
+  mode?: InstallLaunchMode;
+  skipPrimaryConfirm?: boolean;
+  skipRiskConfirm?: boolean;
+  fromMirrorFallback?: boolean;
+}
 
 const EMPTY_QUICK_SETUP: QuickSetupStatus = {
   key: null,
@@ -126,6 +148,47 @@ const EMPTY_QUICK_SETUP: QuickSetupStatus = {
   message: "尚未开始快速安装向导。",
   detail: null
 };
+
+interface ConfirmDialogState {
+  open: boolean;
+  title: string;
+  message: string;
+  confirmText: string;
+  cancelText: string;
+  danger: boolean;
+}
+
+function isKimiMirrorInstallKey(key: CliKey) {
+  return key === "kimi" || key === "kimi_web";
+}
+
+function buildMirrorInstallCommand(installCommand: string) {
+  return [
+    "$__execlink_prev_uv_default_index = $env:UV_DEFAULT_INDEX",
+    "try {",
+    `  $env:UV_DEFAULT_INDEX = '${UV_TUNA_SIMPLE_INDEX_URL}'`,
+    `  ${installCommand}`,
+    "} finally {",
+    "  if ($null -eq $__execlink_prev_uv_default_index) {",
+    "    Remove-Item Env:UV_DEFAULT_INDEX -ErrorAction SilentlyContinue",
+    "  } else {",
+    "    $env:UV_DEFAULT_INDEX = $__execlink_prev_uv_default_index",
+    "  }",
+    "}"
+  ].join("\n");
+}
+
+function hasTauriRuntime() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  const candidate = window as Window & {
+    __TAURI_INTERNALS__?: {
+      invoke?: unknown;
+    };
+  };
+  return typeof candidate.__TAURI_INTERNALS__?.invoke === "function";
+}
 
 export function HomePage() {
   const [loading, setLoading] = useState(true);
@@ -143,14 +206,55 @@ export function HomePage() {
   const [hkcuGroups, setHkcuGroups] = useState<HkcuMenuGroup[]>([]);
   const [selectedHkcuGroupKeys, setSelectedHkcuGroupKeys] = useState<string[]>([]);
   const [loadingHkcuGroups, setLoadingHkcuGroups] = useState(false);
+  const [windowBusy, setWindowBusy] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>({
+    open: false,
+    title: "",
+    message: "",
+    confirmText: "确认",
+    cancelText: "取消",
+    danger: false
+  });
   const installPollTimerRef = useRef<number | null>(null);
+  const terminalAutoCloseTimerRef = useRef<number | null>(null);
   const installPollExpectedRef = useRef<boolean | null>(null);
+  const installAttemptContextRef = useRef<InstallAttemptContext | null>(null);
+  const installLauncherRef = useRef<((key: CliKey, options?: InstallLaunchOptions) => Promise<void>) | null>(
+    null
+  );
   const terminalUnlistenRef = useRef<UnlistenFn[]>([]);
+  const confirmResolveRef = useRef<((accepted: boolean) => void) | null>(null);
   const toastManager = Toast.useToastManager();
   const toastAddRef = useRef(toastManager.add);
   const configRef = useRef(config);
+  const tauriWindow = useMemo(() => (hasTauriRuntime() ? getCurrentWindow() : null), []);
   toastAddRef.current = toastManager.add;
   configRef.current = config;
+
+  const appendTerminalPanelOutput = useCallback((text: string) => {
+    if (!text) {
+      return;
+    }
+    const host = window as Window & {
+      __EXECLINK_TERMINAL_WRITE__?: (payload: string) => void;
+      __EXECLINK_TERMINAL_BUFFER__?: string;
+    };
+    const writer = host.__EXECLINK_TERMINAL_WRITE__;
+    if (writer) {
+      writer(text);
+      return;
+    }
+    const previous = host.__EXECLINK_TERMINAL_BUFFER__ ?? "";
+    const merged = `${previous}${text}`;
+    host.__EXECLINK_TERMINAL_BUFFER__ = merged.length > 120000 ? merged.slice(merged.length - 120000) : merged;
+  }, []);
+
+  const clearTerminalPanelBuffer = useCallback(() => {
+    const host = window as Window & {
+      __EXECLINK_TERMINAL_BUFFER__?: string;
+    };
+    host.__EXECLINK_TERMINAL_BUFFER__ = "";
+  }, []);
 
   const stopInstallPolling = useCallback(() => {
     if (installPollTimerRef.current !== null) {
@@ -158,6 +262,7 @@ export function HomePage() {
       installPollTimerRef.current = null;
     }
     installPollExpectedRef.current = null;
+    installAttemptContextRef.current = null;
     setInstallingKey(null);
   }, []);
 
@@ -166,6 +271,9 @@ export function HomePage() {
       if (installPollTimerRef.current !== null) {
         window.clearInterval(installPollTimerRef.current);
       }
+      if (terminalAutoCloseTimerRef.current !== null) {
+        window.clearTimeout(terminalAutoCloseTimerRef.current);
+      }
     };
   }, []);
 
@@ -173,12 +281,7 @@ export function HomePage() {
     let active = true;
     void (async () => {
       const unlistenOutput = await listen<TerminalOutputEvent>("terminal_output", (event) => {
-        const writer = (window as Window & {
-          __EXECLINK_TERMINAL_WRITE__?: (text: string) => void;
-        }).__EXECLINK_TERMINAL_WRITE__;
-        if (writer) {
-          writer(event.payload.data);
-        }
+        appendTerminalPanelOutput(event.payload.data);
       });
 
       const unlistenState = await listen<TerminalStateEvent>("terminal_state", (event) => {
@@ -203,6 +306,93 @@ export function HomePage() {
         }
       }
       terminalUnlistenRef.current = [];
+    };
+  }, [appendTerminalPanelOutput]);
+
+  const runWindowAction = useCallback(
+    async (action: (win: TauriWindow) => Promise<void>) => {
+      if (!tauriWindow || windowBusy) {
+        return;
+      }
+      setWindowBusy(true);
+      try {
+        await action(tauriWindow);
+      } catch {
+        // ignore non-critical window action errors
+      } finally {
+        setWindowBusy(false);
+      }
+    },
+    [tauriWindow, windowBusy]
+  );
+
+  const onProductBarMouseDown = useCallback(
+    async (event: ReactMouseEvent<HTMLElement>) => {
+      if (!tauriWindow || event.button !== 0) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("[data-no-drag='true']")) {
+        return;
+      }
+      if (event.detail >= 2) {
+        await runWindowAction((win) => win.toggleMaximize());
+        return;
+      }
+      try {
+        await tauriWindow.startDragging();
+      } catch {
+        // ignore drag errors
+      }
+    },
+    [runWindowAction, tauriWindow]
+  );
+
+  const settleConfirmDialog = useCallback((accepted: boolean) => {
+    const resolver = confirmResolveRef.current;
+    confirmResolveRef.current = null;
+    setConfirmDialog((prev) => ({
+      ...prev,
+      open: false
+    }));
+    if (resolver) {
+      resolver(accepted);
+    }
+  }, []);
+
+  const requestConfirm = useCallback(
+    (options: {
+      title: string;
+      message: string;
+      confirmText?: string;
+      cancelText?: string;
+      danger?: boolean;
+    }) => {
+      if (confirmResolveRef.current) {
+        confirmResolveRef.current(false);
+        confirmResolveRef.current = null;
+      }
+      return new Promise<boolean>((resolve) => {
+        confirmResolveRef.current = resolve;
+        setConfirmDialog({
+          open: true,
+          title: options.title,
+          message: options.message,
+          confirmText: options.confirmText ?? "确认",
+          cancelText: options.cancelText ?? "取消",
+          danger: Boolean(options.danger)
+        });
+      });
+    },
+    []
+  );
+
+  useEffect(() => {
+    return () => {
+      if (confirmResolveRef.current) {
+        confirmResolveRef.current(false);
+        confirmResolveRef.current = null;
+      }
     };
   }, []);
 
@@ -310,6 +500,44 @@ export function HomePage() {
     }
   }, []);
 
+  const clearTerminalAutoCloseTimer = useCallback(() => {
+    if (terminalAutoCloseTimerRef.current !== null) {
+      window.clearTimeout(terminalAutoCloseTimerRef.current);
+      terminalAutoCloseTimerRef.current = null;
+    }
+  }, []);
+
+  const closeEmbeddedTerminalSilently = useCallback(async () => {
+    clearTerminalAutoCloseTimer();
+    try {
+      await terminalCloseSession();
+    } catch {
+      // ignore terminal close failures for auto-close path
+    } finally {
+      setTerminalState("idle");
+      setFocusedCliKey(null);
+      clearTerminalPanelBuffer();
+    }
+  }, [clearTerminalAutoCloseTimer, clearTerminalPanelBuffer]);
+
+  const scheduleTerminalAutoClose = useCallback(
+    (delayMs = 3000) => {
+      clearTerminalAutoCloseTimer();
+      terminalAutoCloseTimerRef.current = window.setTimeout(() => {
+        terminalAutoCloseTimerRef.current = null;
+        void closeEmbeddedTerminalSilently();
+      }, delayMs);
+    },
+    [clearTerminalAutoCloseTimer, closeEmbeddedTerminalSilently]
+  );
+
+  const emitTerminalScriptPreview = useCallback(
+    (label: string, script: string) => {
+      appendTerminalPanelOutput(`\n[ExecLink] ${label}\n> ${script}\n`);
+    },
+    [appendTerminalPanelOutput]
+  );
+
   const buildConfigWithCliDetected = useCallback(
     (base: AppConfig, key: CliKey, detected: boolean): AppConfig => ({
       ...base,
@@ -381,10 +609,42 @@ export function HomePage() {
     [applyMenuConfigWithFallback, buildConfigWithCliDetected, refreshInitialState]
   );
 
+  const requestMirrorFallbackRetry = useCallback(
+    async (key: CliKey, reason: "timeout" | "failed") => {
+      const launcher = installLauncherRef.current;
+      if (!launcher) {
+        return;
+      }
+      const hint = installHints[key];
+      const displayName = hint?.display_name ?? CLI_DEFAULT_TITLES[key];
+      const accepted = await requestConfirm({
+        title: "清华源安装复检未通过",
+        message: [
+          `${displayName} 使用清华源后${reason === "timeout" ? "复检超时" : "复检失败"}。`,
+          "可能是镜像同步延迟或网络连通性问题。",
+          "\n是否回退官方源并重试一次安装？"
+        ].join("\n"),
+        confirmText: "回退官方源重试",
+        cancelText: "稍后手动处理"
+      });
+      if (!accepted) {
+        return;
+      }
+      await launcher(key, {
+        mode: "official",
+        skipPrimaryConfirm: true,
+        skipRiskConfirm: true,
+        fromMirrorFallback: true
+      });
+    },
+    [installHints, requestConfirm]
+  );
+
   const startInstallRecheck = useCallback(
-    (key: CliKey, expectedDetected: boolean) => {
+    (key: CliKey, expectedDetected: boolean, mode: InstallLaunchMode = "official") => {
       stopInstallPolling();
       installPollExpectedRef.current = expectedDetected;
+      installAttemptContextRef.current = { key, expectedDetected, mode };
       setInstallingKey(key);
       const startedAt = Date.now();
 
@@ -395,10 +655,14 @@ export function HomePage() {
             setStatuses(next);
 
             if (next[key] === expectedDetected) {
+              installAttemptContextRef.current = null;
               stopInstallPolling();
               setWorking(true);
               try {
-                await syncMenuAfterCliChange(key, expectedDetected);
+                const synced = await syncMenuAfterCliChange(key, expectedDetected);
+                if (synced) {
+                  scheduleTerminalAutoClose(3000);
+                }
               } finally {
                 setWorking(false);
               }
@@ -406,6 +670,8 @@ export function HomePage() {
             }
 
             if (Date.now() - startedAt >= INSTALL_RECHECK_TIMEOUT_MS) {
+              const attemptContext = installAttemptContextRef.current;
+              installAttemptContextRef.current = null;
               stopInstallPolling();
               const actionLabel = expectedDetected ? "安装" : "卸载";
               setLastResult({
@@ -414,8 +680,18 @@ export function HomePage() {
                 message: `${CLI_DEFAULT_TITLES[key]} ${actionLabel}后复检超时`,
                 detail: `请确认${actionLabel}命令是否已完成，并手动点击“刷新 CLI 检测”。`
               });
+              if (
+                expectedDetected &&
+                attemptContext?.key === key &&
+                attemptContext.mode === "mirror" &&
+                isKimiMirrorInstallKey(key)
+              ) {
+                await requestMirrorFallbackRetry(key, "timeout");
+              }
             }
           } catch (error) {
+            const attemptContext = installAttemptContextRef.current;
+            installAttemptContextRef.current = null;
             stopInstallPolling();
             setLastResult({
               ok: false,
@@ -423,11 +699,19 @@ export function HomePage() {
               message: `${expectedDetected ? "安装" : "卸载"}后复检失败`,
               detail: String(error)
             });
+            if (
+              expectedDetected &&
+              attemptContext?.key === key &&
+              attemptContext.mode === "mirror" &&
+              isKimiMirrorInstallKey(key)
+            ) {
+              await requestMirrorFallbackRetry(key, "failed");
+            }
           }
         })();
       }, INSTALL_RECHECK_INTERVAL_MS);
     },
-    [stopInstallPolling, syncMenuAfterCliChange]
+    [requestMirrorFallbackRetry, scheduleTerminalAutoClose, stopInstallPolling, syncMenuAfterCliChange]
   );
 
   const onEnsureInstall = useCallback(async () => {
@@ -553,7 +837,10 @@ export function HomePage() {
       ) {
         const detected = installPollExpectedRef.current === true;
         stopInstallPolling();
-        await syncMenuAfterCliChange(installingKey, detected);
+        const synced = await syncMenuAfterCliChange(installingKey, detected);
+        if (synced) {
+          scheduleTerminalAutoClose(3000);
+        }
         return;
       }
 
@@ -563,7 +850,7 @@ export function HomePage() {
     } finally {
       setWorking(false);
     }
-  }, [installingKey, stopInstallPolling, syncMenuAfterCliChange]);
+  }, [installingKey, scheduleTerminalAutoClose, stopInstallPolling, syncMenuAfterCliChange]);
 
   const onCopyInstallCommand = useCallback(
     async (key: CliKey) => {
@@ -636,8 +923,20 @@ export function HomePage() {
     });
   }, [runAction]);
 
-  const onLaunchInstall = useCallback(
-    async (key: CliKey) => {
+  const launchInstall = useCallback(
+    async (key: CliKey, options?: InstallLaunchOptions) => {
+      const mode = options?.mode ?? "official";
+      const mirrorMode = mode === "mirror";
+      if (mirrorMode && !isKimiMirrorInstallKey(key)) {
+        setLastResult({
+          ok: false,
+          code: "mirror_install_unsupported",
+          message: "该 CLI 不支持清华源一键安装",
+          detail: `仅 kimi / kimi_web 支持镜像安装，当前 key=${key}。`
+        });
+        return;
+      }
+
       const hint = installHints[key];
       if (!hint) {
         setLastResult({
@@ -657,48 +956,73 @@ export function HomePage() {
         `WSL: ${installPrereq.wsl ? "✅" : "❌"}`
       ];
 
-      const firstConfirm = window.confirm(
-        [
-          `将启动 ${hint.display_name} 安装。`,
-          `\n命令:\n${hint.install_command}`,
-          `\n来源域名: ${hint.official_domain}`,
-          `发行方: ${hint.publisher}`,
-          `\n前置检查:\n${precheckLines.join("\n")}`,
-          "\n命令会在内置终端执行，继续吗？"
-        ].join("\n")
-      );
+      const effectiveInstallCommand = mirrorMode ? buildMirrorInstallCommand(hint.install_command) : hint.install_command;
+      const installSourceLabel = mirrorMode ? "清华源" : "官方源";
 
-      if (!firstConfirm) {
-        setLastResult({
-          ok: false,
-          code: "install_cancelled",
-          message: "已取消仅执行安装",
-          detail: null
+      if (!options?.skipPrimaryConfirm) {
+        const firstConfirm = await requestConfirm({
+          title: `确认安装 ${hint.display_name}${mirrorMode ? "（清华源）" : ""}`,
+          message: [
+            `将启动 ${hint.display_name} 安装（${installSourceLabel}）。`,
+            mirrorMode ? `\n镜像地址: ${UV_TUNA_SIMPLE_INDEX_URL}` : "",
+            mirrorMode ? "本次仅对当前安装命令临时设置 UV_DEFAULT_INDEX，不修改系统全局配置。" : "",
+            `\n命令:\n${effectiveInstallCommand}`,
+            `\n来源域名: ${hint.official_domain}`,
+            `发行方: ${hint.publisher}`,
+            `\n前置检查:\n${precheckLines.join("\n")}`,
+            "\n命令会在内置终端执行，继续吗？"
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          confirmText: "继续安装",
+          cancelText: "取消"
         });
-        return;
+
+        if (!firstConfirm) {
+          setLastResult({
+            ok: false,
+            code: "install_cancelled",
+            message: mirrorMode ? "已取消清华源安装" : "已取消仅执行安装",
+            detail: null
+          });
+          return;
+        }
       }
 
-      if (hint.risk_remote_script) {
-        const secondConfirm = window.confirm(
-          [
+      if (hint.risk_remote_script && !options?.skipRiskConfirm) {
+        const secondConfirm = await requestConfirm({
+          title: "高风险安装命令确认",
+          message: [
             "该安装命令包含远程脚本执行（例如 irm|iex / curl|bash）。",
             "请确认你信任来源后再继续。",
             "\n是否继续执行高风险安装命令？"
-          ].join("\n")
-        );
+          ].join("\n"),
+          confirmText: "继续执行",
+          cancelText: "取消",
+          danger: true
+        });
         if (!secondConfirm) {
           setLastResult({
             ok: false,
             code: "install_cancelled",
-            message: "已取消仅执行安装",
+            message: mirrorMode ? "已取消清华源安装" : "已取消仅执行安装",
             detail: "远程脚本二次确认未通过。"
           });
           return;
         }
       }
 
+      clearTerminalAutoCloseTimer();
       setQuickSetup(EMPTY_QUICK_SETUP);
       setFocusedCliKey(key);
+      if (options?.fromMirrorFallback) {
+        setLastResult({
+          ok: true,
+          code: "install_retry_official_started",
+          message: `${hint.display_name} 正在回退官方源重试安装`,
+          detail: null
+        });
+      }
       setWorking(true);
       try {
         const readyResult = await terminalEnsureSession();
@@ -707,23 +1031,54 @@ export function HomePage() {
           return;
         }
         setTerminalState("running");
-        const result = await terminalRunScript(hint.install_command);
+        emitTerminalScriptPreview(
+          `${hint.display_name} 安装命令${mirrorMode ? "（清华源）" : "（官方源）"}`,
+          effectiveInstallCommand
+        );
+        const result = await terminalRunScript(effectiveInstallCommand);
         setLastResult(result);
         if (result.ok) {
-          startInstallRecheck(key, true);
+          startInstallRecheck(key, true, mode);
         }
       } catch (error) {
         setLastResult({
           ok: false,
           code: "install_launch_failed",
-          message: "启动仅执行安装失败",
+          message: mirrorMode ? "启动清华源安装失败" : "启动仅执行安装失败",
           detail: String(error)
         });
       } finally {
         setWorking(false);
       }
     },
-    [installHints, installPrereq, startInstallRecheck]
+    [
+      clearTerminalAutoCloseTimer,
+      emitTerminalScriptPreview,
+      installHints,
+      installPrereq.node,
+      installPrereq.npm,
+      installPrereq.pwsh,
+      installPrereq.winget,
+      installPrereq.wsl,
+      requestConfirm,
+      startInstallRecheck
+    ]
+  );
+
+  installLauncherRef.current = launchInstall;
+
+  const onLaunchInstall = useCallback(
+    async (key: CliKey) => {
+      await launchInstall(key, { mode: "official" });
+    },
+    [launchInstall]
+  );
+
+  const onLaunchMirrorInstall = useCallback(
+    async (key: CliKey) => {
+      await launchInstall(key, { mode: "mirror" });
+    },
+    [launchInstall]
   );
 
   const onLaunchUninstall = useCallback(
@@ -742,13 +1097,17 @@ export function HomePage() {
         return;
       }
 
-      const accepted = window.confirm(
-        [
+      const accepted = await requestConfirm({
+        title: `确认卸载 ${displayName}`,
+        message: [
           `将启动 ${displayName} 卸载。`,
           `\n命令:\n${uninstallCommand}`,
           "\n命令会在内置终端执行，继续吗？"
-        ].join("\n")
-      );
+        ].join("\n"),
+        confirmText: "继续卸载",
+        cancelText: "取消",
+        danger: true
+      });
 
       if (!accepted) {
         setLastResult({
@@ -760,6 +1119,7 @@ export function HomePage() {
         return;
       }
 
+      clearTerminalAutoCloseTimer();
       setQuickSetup(EMPTY_QUICK_SETUP);
       setFocusedCliKey(key);
       setWorking(true);
@@ -770,6 +1130,7 @@ export function HomePage() {
           return;
         }
         setTerminalState("running");
+        emitTerminalScriptPreview(`${displayName} 卸载命令`, uninstallCommand);
         const result = await terminalRunScript(uninstallCommand);
         setLastResult(result);
         if (result.ok) {
@@ -786,7 +1147,7 @@ export function HomePage() {
         setWorking(false);
       }
     },
-    [installHints, startInstallRecheck]
+    [clearTerminalAutoCloseTimer, emitTerminalScriptPreview, installHints, requestConfirm, startInstallRecheck]
   );
 
   const setQuickPhase = useCallback(
@@ -815,6 +1176,7 @@ export function HomePage() {
         return;
       }
 
+      clearTerminalAutoCloseTimer();
       setFocusedCliKey(key);
       setQuickSetup({
         key,
@@ -845,9 +1207,12 @@ export function HomePage() {
         setInstallPrereq(prereq);
 
         if (hint.requires_node && (!prereq.node || !prereq.npm)) {
-          const openNode = window.confirm(
-            `${hint.display_name} 依赖 Node.js/npm。是否先打开 Node.js 下载页面？`
-          );
+          const openNode = await requestConfirm({
+            title: "缺少 Node.js / npm 前置环境",
+            message: `${hint.display_name} 依赖 Node.js/npm。是否先打开 Node.js 下载页面？`,
+            confirmText: "打开下载页",
+            cancelText: "稍后处理"
+          });
           if (openNode) {
             await runAction(openNodejsDownloadPage);
           }
@@ -868,13 +1233,17 @@ export function HomePage() {
         }
 
         if (hint.risk_remote_script) {
-          const acceptedRisk = window.confirm(
-            [
+          const acceptedRisk = await requestConfirm({
+            title: "高风险安装命令确认",
+            message: [
               `将通过内置终端执行 ${hint.display_name} 安装命令：`,
               `\n${hint.install_command}`,
               "\n该命令包含远程脚本执行，是否继续？"
-            ].join("\n")
-          );
+            ].join("\n"),
+            confirmText: "继续执行",
+            cancelText: "取消",
+            danger: true
+          });
           if (!acceptedRisk) {
             setQuickSetup({
               key,
@@ -894,6 +1263,7 @@ export function HomePage() {
         }
 
         setQuickPhase("install", "正在执行安装命令...");
+        emitTerminalScriptPreview(`${hint.display_name} 安装命令`, hint.install_command);
         const installScriptResult = await terminalRunScript(hint.install_command);
         if (!installScriptResult.ok) {
           setQuickSetup({
@@ -944,6 +1314,7 @@ export function HomePage() {
 
         if (hint.requires_oauth && hint.auth_command) {
           setQuickPhase("auth", "正在启动授权步骤...");
+          emitTerminalScriptPreview(`${hint.display_name} 授权命令`, hint.auth_command);
           const authResult = await terminalRunScript(hint.auth_command);
           if (!authResult.ok) {
             setQuickSetup({
@@ -956,7 +1327,12 @@ export function HomePage() {
             setLastResult(authResult);
             return;
           }
-          const authDone = window.confirm("完成浏览器授权后点击“确定”继续。");
+          const authDone = await requestConfirm({
+            title: "授权步骤确认",
+            message: "完成浏览器授权后点击“已完成”继续。",
+            confirmText: "已完成",
+            cancelText: "尚未完成"
+          });
           if (!authDone) {
             setQuickSetup({
               key,
@@ -1004,6 +1380,8 @@ export function HomePage() {
           message: `${hint.display_name} 快速安装向导完成`,
           detail: syncResult.detail ?? null
         });
+        setQuickSetup(EMPTY_QUICK_SETUP);
+        scheduleTerminalAutoClose(3000);
       } catch (error) {
         setQuickSetup({
           key,
@@ -1023,9 +1401,13 @@ export function HomePage() {
     [
       applyMenuConfigWithFallback,
       buildConfigWithCliDetected,
+      clearTerminalAutoCloseTimer,
+      emitTerminalScriptPreview,
       installHints,
+      requestConfirm,
       refreshInitialState,
       runAction,
+      scheduleTerminalAutoClose,
       setQuickPhase
     ]
   );
@@ -1099,9 +1481,13 @@ export function HomePage() {
       return;
     }
 
-    const accepted = window.confirm(
-      "将清理 %LOCALAPPDATA%/execlink/ 下的配置、日志与 Nilesoft 目录。此操作不可撤销，是否继续？"
-    );
+    const accepted = await requestConfirm({
+      title: "确认清理应用数据",
+      message: "将清理 %LOCALAPPDATA%/execlink/ 下的配置、日志与 Nilesoft 目录。此操作不可撤销，是否继续？",
+      confirmText: "继续清理",
+      cancelText: "取消",
+      danger: true
+    });
     if (!accepted) {
       setLastResult({
         ok: false,
@@ -1116,7 +1502,7 @@ export function HomePage() {
     if (second.ok) {
       await refreshInitialState();
     }
-  }, [refreshInitialState, runAction]);
+  }, [refreshInitialState, requestConfirm, runAction]);
 
   const onRepairMenuFallback = useCallback(async () => {
     const payload: AppConfig = {
@@ -1131,7 +1517,13 @@ export function HomePage() {
   }, [config, runAction]);
 
   const onRemoveMenuFallback = useCallback(async () => {
-    const accepted = window.confirm(`将删除 HKCU 下“${config.menu_title}”兜底菜单，是否继续？`);
+    const accepted = await requestConfirm({
+      title: "确认删除 HKCU 兜底菜单",
+      message: `将删除 HKCU 下“${config.menu_title}”兜底菜单，是否继续？`,
+      confirmText: "继续删除",
+      cancelText: "取消",
+      danger: true
+    });
     if (!accepted) {
       return;
     }
@@ -1140,7 +1532,7 @@ export function HomePage() {
       return;
     }
     await runAction(refreshExplorer);
-  }, [config.menu_title, runAction]);
+  }, [config.menu_title, requestConfirm, runAction]);
 
   const refreshHkcuGroups = useCallback(async (silent = false) => {
     if (!silent) {
@@ -1200,9 +1592,13 @@ export function HomePage() {
     }
 
     const selectedGroups = hkcuGroups.filter((group) => selectedHkcuGroupKeys.includes(group.key));
-    const accepted = window.confirm(
-      `将删除以下 HKCU 历史分组：\n${selectedGroups.map((group) => `- ${group.title} [${group.key}]`).join("\n")}\n\n是否继续？`
-    );
+    const accepted = await requestConfirm({
+      title: "确认删除历史分组",
+      message: `将删除以下 HKCU 历史分组：\n${selectedGroups.map((group) => `- ${group.title} [${group.key}]`).join("\n")}\n\n是否继续？`,
+      confirmText: "继续删除",
+      cancelText: "取消",
+      danger: true
+    });
     if (!accepted) {
       return;
     }
@@ -1244,7 +1640,7 @@ export function HomePage() {
     } finally {
       setWorking(false);
     }
-  }, [hkcuGroups, refreshHkcuGroups, selectedHkcuGroupKeys]);
+  }, [hkcuGroups, refreshHkcuGroups, requestConfirm, selectedHkcuGroupKeys]);
 
   const onCloseQuickSetup = useCallback(() => {
     setQuickSetup(EMPTY_QUICK_SETUP);
@@ -1275,48 +1671,16 @@ export function HomePage() {
 
   const onCloseFocusedTerminal = useCallback(async () => {
     stopInstallPolling();
+    clearTerminalAutoCloseTimer();
     const result = await terminalCloseSession();
     setLastResult(result);
     setTerminalState("idle");
     setFocusedCliKey(null);
-  }, [stopInstallPolling]);
+    clearTerminalPanelBuffer();
+  }, [clearTerminalAutoCloseTimer, clearTerminalPanelBuffer, stopInstallPolling]);
 
   const orderedCliKeys = useMemo(() => normalizeCliOrder(config.cli_order), [config.cli_order]);
   const canOperate = install.installed && install.registered && !install.needs_elevation;
-
-  const aboutInfoText = useMemo(
-    () =>
-      [
-        "app_name=ExecLink",
-        `version=${APP_VERSION}`,
-        `publisher=${APP_PUBLISHER}`,
-        `identifier=${APP_IDENTIFIER}`,
-        "data_root=%LOCALAPPDATA%/execlink/",
-        "config_file=%LOCALAPPDATA%/execlink/config.json",
-        "nilesoft_root=%LOCALAPPDATA%/execlink/nilesoft-shell/",
-        "log_root=%LOCALAPPDATA%/execlink/logs/"
-      ].join("\n"),
-    []
-  );
-
-  const onCopyAboutInfo = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(aboutInfoText);
-      setLastResult({
-        ok: true,
-        code: "ok",
-        message: "关于信息已复制到剪贴板",
-        detail: null
-      });
-    } catch (error) {
-      setLastResult({
-        ok: false,
-        code: "clipboard_failed",
-        message: "复制关于信息失败",
-        detail: String(error)
-      });
-    }
-  }, [aboutInfoText]);
 
   useEffect(() => {
     void refreshHkcuGroups(true);
@@ -1347,52 +1711,106 @@ export function HomePage() {
   }, [lastResult]);
 
   return (
-    <main className="mx-auto min-h-screen max-w-[1120px] px-3 py-3 text-[var(--ui-text)] max-[540px]:px-2.5 max-[540px]:py-2.5">
-      <div className={`rounded-[3rem] bg-[var(--ui-env)] p-3 ${OUTSET_LARGE} max-[540px]:rounded-[2.1rem] max-[540px]:p-2`}>
-        <div className={`rounded-[2.75rem] border border-[#e3dacd] bg-[var(--ui-base)] p-6 max-[540px]:rounded-[2rem] max-[540px]:p-3.5`}>
-        <header className={`mb-5 flex items-center justify-between gap-4 rounded-[2rem] border border-[#ddd5c9] bg-[var(--ui-base)] p-4 ${OUTSET_SMALL} max-[540px]:mb-4 max-[540px]:flex-col max-[540px]:items-stretch max-[540px]:rounded-[1.5rem]`}>
-          <div className="flex min-w-0 items-center gap-3">
-            <div className={`relative inline-flex w-[150px] flex-none items-center gap-3 rounded-2xl border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-2 ${OUTSET_SMALL} max-[540px]:w-[212px]`}>
-              <span className="absolute inset-1 rounded-full bg-green-700/20 blur-md" />
-              <img
-                className="relative block h-10 w-[132px] object-contain max-[540px]:w-[112px]"
-                src={appLogo}
-                alt="ExecLink logo"
-              />
-              <h1
-                className="group relative m-0 inline-flex cursor-default items-center rounded-xl px-2 py-1 leading-[1.1] outline-none focus-visible:ring-2 focus-visible:ring-[#8f8072]/45"
-                tabIndex={0}
-              >
-                <span className="text-[#4b443e]">Exec</span>
-                <span className="text-green-600">Link</span>
-                <span className={`pointer-events-none absolute top-[calc(100%+8px)] left-0 z-10 translate-y-0.5 whitespace-nowrap rounded-full bg-[var(--ui-base)] px-2.5 py-[5px] text-[11px] text-[var(--ui-muted)] opacity-0 transition-[opacity,transform] duration-150 ${OUTSET_SMALL} group-hover:translate-y-0 group-hover:opacity-100 group-focus-visible:translate-y-0 group-focus-visible:opacity-100`}>
-                  Windows 11 右键菜单 AI CLI 快捷入口
-                </span>
-              </h1>
-            </div>
+    <main className="app-window-shell min-h-screen w-full overflow-hidden rounded-[var(--radius-2xl)] border border-[#ddd5c9] px-3 py-2 text-[var(--ui-text)] max-[420px]:rounded-[var(--radius-xl)] max-[420px]:px-2 max-[420px]:py-1.5">
+      <header
+        className={`fixed top-2 left-2 right-2 z-[1300] flex items-center justify-between gap-3 rounded-[var(--radius-2xl)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${OUTSET_SMALL} max-[420px]:left-1 max-[420px]:right-1 max-[420px]:rounded-[var(--radius-xl)]`}
+        onMouseDown={(event) => void onProductBarMouseDown(event)}
+      >
+        <div className="flex min-w-0 items-center gap-3">
+          <div
+            className={`relative inline-flex w-[150px] flex-none items-center gap-3 rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-2 ${OUTSET_SMALL} max-[420px]:w-auto max-[420px]:px-2.5`}
+          >
+            <span className="absolute inset-1 rounded-full bg-green-700/20 blur-md" />
+            <img
+              className="relative block h-9 w-[124px] object-contain max-[420px]:h-8 max-[420px]:w-[106px]"
+              src={appLogo}
+              alt="ExecLink logo"
+            />
+            <h1
+              className="group relative m-0 inline-flex cursor-default items-center rounded-[var(--radius-md)] px-2 py-1 leading-[1.1] outline-none focus-visible:ring-2 focus-visible:ring-[#8f8072]/45 max-[420px]:hidden"
+              tabIndex={0}
+            >
+              <span className="text-[#4b443e]">Exec</span>
+              <span className="text-green-600">Link</span>
+              <span className={`pointer-events-none absolute top-[calc(100%+8px)] left-0 z-10 translate-y-0.5 whitespace-nowrap rounded-[var(--radius-pill)] bg-[var(--ui-base)] px-2.5 py-[5px] text-[11px] text-[var(--ui-muted)] opacity-0 transition-[opacity,transform] duration-150 ${OUTSET_SMALL} group-hover:translate-y-0 group-hover:opacity-100 group-focus-visible:translate-y-0 group-focus-visible:opacity-100`}>
+                Windows 11 右键菜单 AI CLI 快捷入口
+              </span>
+            </h1>
           </div>
-          <div className="flex flex-wrap items-center justify-end gap-2.5 max-[540px]:w-full max-[540px]:justify-start">
-            <button className={PRIMARY_BUTTON_CLASS} onClick={onDetect} disabled={working || loading}>
+        </div>
+        <div data-no-drag="true" className="ml-auto grid gap-1.5">
+          <div className="flex items-center justify-end gap-1.5">
+            <button
+              type="button"
+              className={HEADER_WINDOW_BUTTON_CLASS}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={() => void runWindowAction((win) => win.minimize())}
+              disabled={!tauriWindow || windowBusy}
+              aria-label="最小化窗口"
+            >
+              <span className="block h-[1.5px] w-2.5 rounded bg-current" />
+            </button>
+            <button
+              type="button"
+              className={`${HEADER_WINDOW_BUTTON_CLASS} hover:bg-[#e9d7d2] hover:text-[#8a4f45]`}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={() => void runWindowAction((win) => win.close())}
+              disabled={!tauriWindow || windowBusy}
+              aria-label="关闭窗口"
+            >
+              <svg viewBox="0 0 24 24" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="m7 7 10 10M17 7 7 17" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>
+          <div className="flex items-center justify-end gap-1.5">
+            <button className={HEADER_ACTION_BUTTON_CLASS} onClick={onDetect} disabled={working || loading}>
               刷新 CLI 检测
             </button>
-            <button className={PRIMARY_BUTTON_CLASS} onClick={onApply} disabled={working || loading || !canOperate}>
+            <button
+              className={HEADER_ACTION_BUTTON_CLASS}
+              onClick={onApply}
+              disabled={working || loading || !canOperate}
+            >
               应用配置
             </button>
           </div>
-        </header>
+        </div>
+      </header>
 
-        <Tabs.Root defaultValue="cli" className="grid gap-4">
-          <Tabs.List
-            className={`inline-flex w-max max-w-full items-center gap-1 overflow-x-auto rounded-full border border-[#ddd5c9] bg-[var(--ui-base)] p-1.5 ${INSET_SMALL}`}
-            aria-label="主分组"
-          >
-            {TABS.map((tab) => (
-              <Tabs.Tab key={tab.key} value={tab.key} className={TAB_CLASS}>
-                {tab.title}
-              </Tabs.Tab>
-            ))}
-            <Tabs.Indicator className="hidden" />
-          </Tabs.List>
+      <section className="app-content-scroll fixed top-[84px] bottom-[52px] left-1 right-1 z-[1100] overflow-x-hidden overflow-y-auto pb-2 max-[420px]:top-[78px] max-[420px]:bottom-[46px] max-[420px]:left-0.5 max-[420px]:right-0.5">
+      <div className="w-full px-1">
+      <Tabs.Root defaultValue="cli" className="grid gap-4 pt-4 pb-2">
+          <div className="flex items-center justify-between gap-2 max-[420px]:gap-1.5">
+            <Tabs.List
+              className={`inline-flex w-max max-w-full items-center gap-1 rounded-full border border-[#ddd5c9] bg-[var(--ui-base)] p-1.5 ${INSET_SMALL}`}
+              aria-label="主分组"
+            >
+              {TABS.map((tab) => (
+                <Tabs.Tab key={tab.key} value={tab.key} className={TAB_CLASS}>
+                  {tab.title}
+                </Tabs.Tab>
+              ))}
+              <Tabs.Indicator className="hidden" />
+            </Tabs.List>
+            <label className="group/menu-title relative block shrink-0">
+              <input
+                className={`${INPUT_CLASS} w-[220px] py-2 text-xs max-[760px]:w-[168px] max-[420px]:w-[124px] max-[420px]:px-2 max-[420px]:py-1.5`}
+                value={config.menu_title}
+                onChange={(event) =>
+                  setConfig((prev) => ({
+                    ...prev,
+                    menu_title: event.target.value
+                  }))
+                }
+                placeholder="菜单分组"
+                aria-label="右键菜单分组名称"
+              />
+              <span className={`pointer-events-none absolute top-[calc(100%+8px)] right-0 z-10 translate-y-0.5 whitespace-nowrap rounded-[var(--radius-pill)] bg-[var(--ui-base)] px-2.5 py-[5px] text-[11px] text-[var(--ui-muted)] opacity-0 transition-[opacity,transform] duration-150 ${OUTSET_SMALL} group-hover/menu-title:translate-y-0 group-hover/menu-title:opacity-100 group-focus-within/menu-title:translate-y-0 group-focus-within/menu-title:opacity-100`}>
+                右键菜单分组名称
+              </span>
+            </label>
+          </div>
 
           <Tabs.Panel value="cli" className="p-0">
             <div className={PANEL_CONTENT_CLASS}>
@@ -1427,6 +1845,7 @@ export function HomePage() {
                 onOpenInstallDocs={onOpenInstallDocs}
                 onOpenNodejsDownload={onOpenNodejsDownload}
                 onLaunchInstall={onLaunchInstall}
+                onLaunchMirrorInstall={onLaunchMirrorInstall}
                 onLaunchUninstall={onLaunchUninstall}
                 onQuickSetup={onQuickSetup}
                 onTerminalEnsureReady={onTerminalEnsureReady}
@@ -1440,20 +1859,6 @@ export function HomePage() {
           <Tabs.Panel value="menu" className="p-0">
             <div className={PANEL_CONTENT_CLASS}>
               <section className={PANEL_BLOCK_CLASS}>
-                <label className={FIELD_CLASS}>
-                  <span className={FIELD_LABEL_CLASS}>右键菜单分组名称</span>
-                  <input
-                    className={INPUT_CLASS}
-                    value={config.menu_title}
-                    onChange={(event) =>
-                      setConfig((prev) => ({
-                        ...prev,
-                        menu_title: event.target.value
-                      }))
-                    }
-                    placeholder="例如：我的助手们"
-                  />
-                </label>
                 <ToggleRow
                   title="启用右键菜单"
                   checked={config.enable_context_menu}
@@ -1498,7 +1903,7 @@ export function HomePage() {
                     </span>
                   </span>
                 </label>
-                <details className={`rounded-[1.25rem] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${OUTSET_SMALL}`}>
+                <details className={`rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${OUTSET_SMALL}`}>
                   <summary className="cursor-pointer select-none text-sm font-semibold text-[var(--ui-text)]">
                     高级模式（默认不影响右键主题）
                   </summary>
@@ -1607,11 +2012,11 @@ export function HomePage() {
                   配置根: <code>{install.config_root ?? "未解析"}</code>
                 </p>
                 <div className="flex flex-wrap gap-2.5">
-                  <button className={PRIMARY_BUTTON_CLASS} onClick={onEnsureInstall} disabled={working || loading}>
+                  <button className={RUNTIME_PRIMARY_BUTTON_CLASS} onClick={onEnsureInstall} disabled={working || loading}>
                     安装/修复 Nilesoft
                   </button>
                   {install.installed && (!install.registered || install.needs_elevation) ? (
-                    <button className={SECONDARY_BUTTON_CLASS} onClick={onRetryElevation} disabled={working || loading}>
+                    <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={onRetryElevation} disabled={working || loading}>
                       提权重试注册
                     </button>
                   ) : null}
@@ -1625,31 +2030,31 @@ export function HomePage() {
                   <code>%LOCALAPPDATA%/execlink/</code> 数据目录。
                 </p>
                 <div className="flex flex-wrap gap-2.5">
-                  <button className={SECONDARY_BUTTON_CLASS} onClick={onAttemptUnregister} disabled={working || loading}>
+                  <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={onAttemptUnregister} disabled={working || loading}>
                     尝试反注册 Nilesoft
                   </button>
-                  <button className={SECONDARY_BUTTON_CLASS} onClick={onRepairMenuFallback} disabled={working || loading}>
+                  <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={onRepairMenuFallback} disabled={working || loading}>
                     HKCU 一键修复菜单
                   </button>
-                  <button className={SECONDARY_BUTTON_CLASS} onClick={onRemoveMenuFallback} disabled={working || loading}>
+                  <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={onRemoveMenuFallback} disabled={working || loading}>
                     移除 HKCU 兜底菜单
                   </button>
-                  <button className={DANGER_BUTTON_CLASS} onClick={onCleanupData} disabled={working || loading}>
+                  <button className={RUNTIME_DANGER_BUTTON_CLASS} onClick={onCleanupData} disabled={working || loading}>
                     清理应用数据
                   </button>
                 </div>
-                <div className={`grid gap-2 rounded-[1.1rem] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${OUTSET_SMALL}`}>
+                <div className={`grid gap-2 rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${OUTSET_SMALL}`}>
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm font-semibold text-[var(--ui-text)]">历史 HKCU 分组清理</span>
                     <button
-                      className={SECONDARY_BUTTON_CLASS}
+                      className={RUNTIME_SECONDARY_BUTTON_CLASS}
                       onClick={() => void refreshHkcuGroups(false)}
                       disabled={working || loading || loadingHkcuGroups}
                     >
                       {loadingHkcuGroups ? "检测中..." : "检测历史分组"}
                     </button>
                     <button
-                      className={DANGER_BUTTON_CLASS}
+                      className={RUNTIME_DANGER_BUTTON_CLASS}
                       onClick={onDeleteSelectedHkcuGroups}
                       disabled={working || loading || selectedHkcuGroupKeys.length === 0}
                     >
@@ -1665,7 +2070,7 @@ export function HomePage() {
                         return (
                           <label
                             key={group.key}
-                            className={`flex items-start gap-2 rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-2.5 py-2 text-xs ${OUTSET_SMALL}`}
+                            className={`flex items-start gap-2 rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[var(--ui-base)] px-2.5 py-2 text-xs ${OUTSET_SMALL}`}
                           >
                             <input
                               type="checkbox"
@@ -1691,7 +2096,7 @@ export function HomePage() {
               </section>
 
               {!canOperate ? (
-                <section className={`grid gap-2 rounded-[1.25rem] border border-[#ddcfc2] bg-[#ecddd8] p-3 ${INSET_SMALL}`}>
+                <section className={`grid gap-2 rounded-[var(--radius-lg)] border border-[#ddcfc2] bg-[#ecddd8] p-3 ${INSET_SMALL}`}>
                   <h2 className={PANEL_TITLE_CLASS}>操作前置条件</h2>
                   <p className="text-sm text-[#7d473e]">
                     当前状态未满足“已安装 + 已注册”，已阻止“应用配置（自动生效）”。
@@ -1704,38 +2109,39 @@ export function HomePage() {
             </div>
           </Tabs.Panel>
 
-          <Tabs.Panel value="about" className="p-0">
-            <div className={PANEL_CONTENT_CLASS}>
-              <section className={PANEL_BLOCK_CLASS}>
-                <h2 className={PANEL_TITLE_CLASS}>关于我</h2>
-                <p className="text-sm text-[var(--ui-muted)]">
-                  ExecLink 用于在 Windows 11 右键菜单中快速启动常用 AI CLI 工具。
-                </p>
-                <p>
-                  发布方：<code>{APP_PUBLISHER}</code>
-                </p>
-                <p>
-                  应用标识：<code>{APP_IDENTIFIER}</code>
-                </p>
-                <p>
-                  应用版本：<code>{APP_VERSION}</code>
-                </p>
-                <p>
-                  数据目录：<code>%LOCALAPPDATA%/execlink/</code>
-                </p>
-                <div className="flex flex-wrap gap-2.5">
-                  <button className={SECONDARY_BUTTON_CLASS} onClick={onCopyAboutInfo} disabled={working || loading}>
-                    复制关于信息
-                  </button>
-                </div>
-              </section>
-            </div>
-          </Tabs.Panel>
-        </Tabs.Root>
+      </Tabs.Root>
       </div>
+      </section>
+
+      <footer
+        className={`fixed bottom-2 left-2 right-2 z-[1250] flex items-center justify-between gap-2 rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[color-mix(in_srgb,var(--ui-base)_92%,white_8%)] px-3 py-1.5 text-[11px] text-[var(--ui-muted)] ${OUTSET_SMALL} max-[420px]:left-1 max-[420px]:right-1 max-[420px]:rounded-[var(--radius-md)] max-[420px]:px-2.5 max-[420px]:py-1`}
+      >
+        <span>
+          ExecLink <span className="text-[var(--ui-light)]">Version</span> <code>{APP_VERSION}</code>
+        </span>
+        <a
+          href={GITHUB_REPO_URL}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="underline decoration-[#c5bdaf] underline-offset-2 transition-colors duration-150 hover:text-[var(--ui-text)]"
+        >
+          GitHub Repository
+        </a>
+      </footer>
+
+      <AppConfirmDialog
+        open={confirmDialog.open}
+        title={confirmDialog.title}
+        message={confirmDialog.message}
+        confirmText={confirmDialog.confirmText}
+        cancelText={confirmDialog.cancelText}
+        danger={confirmDialog.danger}
+        onConfirm={() => settleConfirmDialog(true)}
+        onCancel={() => settleConfirmDialog(false)}
+      />
 
       <Toast.Portal>
-        <Toast.Viewport className="pointer-events-none fixed right-3.5 bottom-3.5 z-[1200] grid w-[min(380px,calc(100vw-28px))] gap-2">
+        <Toast.Viewport className="pointer-events-none fixed right-3.5 bottom-14 z-[1200] grid w-[min(380px,calc(100vw-28px))] gap-2 max-[420px]:bottom-12">
           {toastManager.toasts.map((toast) => (
             <Toast.Root key={toast.id} toast={toast} className={TOAST_ROOT_CLASS}>
               <Toast.Content className="grid min-w-0 gap-1">
@@ -1743,7 +2149,7 @@ export function HomePage() {
                 <Toast.Description className={TOAST_DESCRIPTION_CLASS} />
               </Toast.Content>
               <Toast.Close
-                className={`rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-1.5 py-0.5 text-[15px] leading-none text-[var(--ui-muted)] outline-none transition-[box-shadow,transform,color] duration-150 hover:text-[var(--ui-text)] focus-visible:ring-2 focus-visible:ring-[#8f8072]/40 active:scale-95 active:shadow-[inset_2px_2px_5px_#d5d0c4,inset_-2px_-2px_5px_#ffffff] ${OUTSET_SMALL}`}
+                className={`rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[var(--ui-base)] px-1.5 py-0.5 text-[15px] leading-none text-[var(--ui-muted)] outline-none transition-[box-shadow,transform,color] duration-150 hover:text-[var(--ui-text)] focus-visible:ring-2 focus-visible:ring-[#8f8072]/40 active:scale-95 active:shadow-[inset_1px_1px_3px_#d5d0c4,inset_-1px_-1px_3px_#ffffff] ${OUTSET_SMALL}`}
                 aria-label="关闭通知"
               >
                 ×
@@ -1752,14 +2158,8 @@ export function HomePage() {
           ))}
         </Toast.Viewport>
       </Toast.Portal>
-      </div>
     </main>
   );
 }
-
-
-
-
-
 
 

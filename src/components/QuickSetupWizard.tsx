@@ -37,14 +37,14 @@ export function QuickSetupWizard({ status, onClose, onRetry }: Props) {
   const activeIndex = PHASES.indexOf(status.phase);
 
   return (
-    <section className="grid gap-3 rounded-[1.5rem] border border-[#ddd5c9] bg-[var(--ui-base)] p-4 shadow-[inset_4px_4px_8px_#d5d0c4,inset_-4px_-4px_8px_#ffffff]">
+    <section className="grid gap-3 rounded-[1.5rem] border border-[#ddd5c9] bg-[var(--ui-base)] p-4 shadow-[inset_2px_2px_4px_#d5d0c4,inset_-2px_-2px_4px_#ffffff]">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-semibold text-[var(--ui-text)]">快速安装向导 · {targetTitle}</h3>
         <div className="flex items-center gap-2">
           {!status.running && status.phase === "failed" ? (
             <button
               type="button"
-              className="rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-1.5 text-xs font-medium text-[var(--ui-text)] shadow-[5px_5px_10px_#d5d0c4,-5px_-5px_10px_#ffffff] transition-[box-shadow,transform,color] duration-150 hover:text-[#6a5e52] active:scale-95 active:shadow-[inset_2px_2px_5px_#d5d0c4,inset_-2px_-2px_5px_#ffffff]"
+              className="rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-1.5 text-xs font-medium text-[var(--ui-text)] shadow-[3px_3px_6px_#d5d0c4,-3px_-3px_6px_#ffffff] transition-[box-shadow,transform,color] duration-150 hover:text-[#6a5e52] active:scale-95 active:shadow-[inset_1px_1px_3px_#d5d0c4,inset_-1px_-1px_3px_#ffffff]"
               onClick={onRetry}
             >
               重试
@@ -53,7 +53,7 @@ export function QuickSetupWizard({ status, onClose, onRetry }: Props) {
           {!status.running ? (
             <button
               type="button"
-              className="rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-1.5 text-xs font-medium text-[var(--ui-muted)] shadow-[5px_5px_10px_#d5d0c4,-5px_-5px_10px_#ffffff] transition-[box-shadow,transform,color] duration-150 hover:text-[var(--ui-text)] active:scale-95 active:shadow-[inset_2px_2px_5px_#d5d0c4,inset_-2px_-2px_5px_#ffffff]"
+              className="rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-1.5 text-xs font-medium text-[var(--ui-muted)] shadow-[3px_3px_6px_#d5d0c4,-3px_-3px_6px_#ffffff] transition-[box-shadow,transform,color] duration-150 hover:text-[var(--ui-text)] active:scale-95 active:shadow-[inset_1px_1px_3px_#d5d0c4,inset_-1px_-1px_3px_#ffffff]"
               onClick={onClose}
             >
               关闭
@@ -84,7 +84,7 @@ export function QuickSetupWizard({ status, onClose, onRetry }: Props) {
         })}
       </ol>
 
-      <div className="rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-2 text-xs text-[var(--ui-text)] shadow-[5px_5px_10px_#d5d0c4,-5px_-5px_10px_#ffffff]">
+      <div className="rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-2 text-xs text-[var(--ui-text)] shadow-[3px_3px_6px_#d5d0c4,-3px_-3px_6px_#ffffff]">
         <div className="font-semibold">{PHASE_LABELS[status.phase] ?? status.phase}</div>
         <div className="mt-1 text-[var(--ui-muted)]">{status.message}</div>
         {status.detail ? (

@@ -66,10 +66,16 @@ export function TerminalPanel({
   useEffect(() => {
     const host = window as Window & {
       __EXECLINK_TERMINAL_WRITE__?: (text: string) => void;
+      __EXECLINK_TERMINAL_BUFFER__?: string;
     };
     host.__EXECLINK_TERMINAL_WRITE__ = (text: string) => {
       setOutput((prev) => appendTerminalOutput(prev, text));
     };
+    const buffered = host.__EXECLINK_TERMINAL_BUFFER__;
+    if (buffered) {
+      setOutput((prev) => appendTerminalOutput(prev, buffered));
+      host.__EXECLINK_TERMINAL_BUFFER__ = "";
+    }
     return () => {
       delete host.__EXECLINK_TERMINAL_WRITE__;
     };
@@ -88,28 +94,28 @@ export function TerminalPanel({
   }, [onEnsureReady, onResize]);
 
   return (
-    <section className="grid gap-2 rounded-[1.5rem] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 shadow-[10px_10px_20px_#d5d0c4,-10px_-10px_20px_#ffffff]">
+    <section className="grid gap-2 rounded-[1.5rem] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 shadow-[6px_6px_12px_#d5d0c4,-6px_-6px_12px_#ffffff]">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-semibold text-[var(--ui-text)]">内置终端</h3>
         <div className="flex items-center gap-2 text-[11px] text-[var(--ui-muted)]">
           <span>状态: {state}</span>
           <button
             type="button"
-            className="rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-2.5 py-1 shadow-[5px_5px_10px_#d5d0c4,-5px_-5px_10px_#ffffff] transition-[box-shadow,transform,color] duration-150 hover:text-[var(--ui-text)] active:scale-95 active:shadow-[inset_2px_2px_5px_#d5d0c4,inset_-2px_-2px_5px_#ffffff]"
+            className="rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-2.5 py-1 shadow-[3px_3px_6px_#d5d0c4,-3px_-3px_6px_#ffffff] transition-[box-shadow,transform,color] duration-150 hover:text-[var(--ui-text)] active:scale-95 active:shadow-[inset_1px_1px_3px_#d5d0c4,inset_-1px_-1px_3px_#ffffff]"
             onClick={() => void onEnsureReady()}
           >
             重连
           </button>
           <button
             type="button"
-            className="rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-2.5 py-1 shadow-[5px_5px_10px_#d5d0c4,-5px_-5px_10px_#ffffff] transition-[box-shadow,transform,color] duration-150 hover:text-[var(--ui-text)] active:scale-95 active:shadow-[inset_2px_2px_5px_#d5d0c4,inset_-2px_-2px_5px_#ffffff]"
+            className="rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-2.5 py-1 shadow-[3px_3px_6px_#d5d0c4,-3px_-3px_6px_#ffffff] transition-[box-shadow,transform,color] duration-150 hover:text-[var(--ui-text)] active:scale-95 active:shadow-[inset_1px_1px_3px_#d5d0c4,inset_-1px_-1px_3px_#ffffff]"
             onClick={() => void onCloseSession()}
           >
             关闭
           </button>
           <button
             type="button"
-            className="rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-2.5 py-1 shadow-[5px_5px_10px_#d5d0c4,-5px_-5px_10px_#ffffff] transition-[box-shadow,transform,color] duration-150 hover:text-[var(--ui-text)] active:scale-95 active:shadow-[inset_2px_2px_5px_#d5d0c4,inset_-2px_-2px_5px_#ffffff]"
+            className="rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-2.5 py-1 shadow-[3px_3px_6px_#d5d0c4,-3px_-3px_6px_#ffffff] transition-[box-shadow,transform,color] duration-150 hover:text-[var(--ui-text)] active:scale-95 active:shadow-[inset_1px_1px_3px_#d5d0c4,inset_-1px_-1px_3px_#ffffff]"
             onClick={() => setOutput("")}
           >
             清屏
@@ -119,7 +125,7 @@ export function TerminalPanel({
 
       <pre
         ref={outputRef}
-        className="h-[260px] overflow-auto rounded-[1.25rem] border border-[#ddd5c9] bg-[#f1ebe1] p-2 text-[12px] leading-[1.35] text-[#33312e] shadow-[inset_4px_4px_8px_#d5d0c4,inset_-4px_-4px_8px_#ffffff]"
+        className="h-[260px] overflow-auto rounded-[1.25rem] border border-[#ddd5c9] bg-[#f1ebe1] p-2 text-[12px] leading-[1.35] text-[#33312e] shadow-[inset_2px_2px_4px_#d5d0c4,inset_-2px_-2px_4px_#ffffff]"
       >
         {output || " "}
       </pre>
@@ -137,14 +143,14 @@ export function TerminalPanel({
         }}
       >
         <input
-          className="min-w-[220px] flex-1 rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-1.5 text-xs text-[var(--ui-text)] shadow-[inset_4px_4px_8px_#d5d0c4,inset_-4px_-4px_8px_#ffffff] outline-none focus-visible:ring-2 focus-visible:ring-[#8f8072]/35"
+          className="min-w-[220px] flex-1 rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-1.5 text-xs text-[var(--ui-text)] shadow-[inset_2px_2px_4px_#d5d0c4,inset_-2px_-2px_4px_#ffffff] outline-none focus-visible:ring-2 focus-visible:ring-[#8f8072]/35"
           placeholder="在内置终端执行命令，如 kimi login"
           value={scriptInput}
           onChange={(event) => setScriptInput(event.target.value)}
         />
         <button
           type="submit"
-          className="rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-1.5 text-xs font-medium text-[var(--ui-text)] shadow-[5px_5px_10px_#d5d0c4,-5px_-5px_10px_#ffffff] transition-[box-shadow,transform,color] duration-150 hover:text-[#6a5e52] active:scale-95 active:shadow-[inset_2px_2px_5px_#d5d0c4,inset_-2px_-2px_5px_#ffffff]"
+          className="rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-1.5 text-xs font-medium text-[var(--ui-text)] shadow-[3px_3px_6px_#d5d0c4,-3px_-3px_6px_#ffffff] transition-[box-shadow,transform,color] duration-150 hover:text-[#6a5e52] active:scale-95 active:shadow-[inset_1px_1px_3px_#d5d0c4,inset_-1px_-1px_3px_#ffffff]"
         >
           执行
         </button>

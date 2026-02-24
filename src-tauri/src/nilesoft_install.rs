@@ -1,12 +1,11 @@
 use crate::{
-    logging, nilesoft,
+    logging, nilesoft, process_util,
     state::{self, AppResult, InstallStatus},
 };
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
     path::{Path, PathBuf},
-    process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{path::BaseDirectory, AppHandle, Manager};
@@ -172,7 +171,7 @@ fn command_output_detail(stdout: &[u8], stderr: &[u8]) -> String {
 
 fn query_registered_shell_dll_from_registry() -> Option<PathBuf> {
     let key = format!(r"HKCR\CLSID\{NILESOFT_CLSID}\InprocServer32");
-    let output = Command::new("reg")
+    let output = process_util::command_hidden("reg")
         .args(["query", &key, "/ve"])
         .output()
         .ok()?;
@@ -300,7 +299,7 @@ pub fn register_normal(shell_exe: &Path) -> AppResult<()> {
         shell_exe.display()
     ));
 
-    let output = Command::new(shell_exe)
+    let output = process_util::command_hidden(shell_exe)
         .args(["-register", "-restart"])
         .output()
         .map_err(|e| format!("执行注册命令失败: {e}"))?;
@@ -325,7 +324,7 @@ pub fn register_elevated(shell_exe: &Path) -> AppResult<()> {
         "$p = Start-Process -FilePath '{exe_path}' -ArgumentList '-register','-restart' -Verb RunAs -Wait -PassThru; exit $p.ExitCode"
     );
 
-    let output = Command::new("powershell.exe")
+    let output = process_util::command_hidden("powershell.exe")
         .args([
             "-NoProfile",
             "-ExecutionPolicy",
@@ -351,7 +350,7 @@ pub fn attempt_unregister(shell_exe: &Path) -> AppResult<UnregisterResult> {
         shell_exe.display()
     ));
 
-    let output = Command::new(shell_exe)
+    let output = process_util::command_hidden(shell_exe)
         .args(["-unregister", "-restart"])
         .output()
         .map_err(|e| format!("执行反注册命令失败: {e}"))?;

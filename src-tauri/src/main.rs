@@ -7,6 +7,7 @@ mod explorer;
 mod logging;
 mod nilesoft;
 mod nilesoft_install;
+mod process_util;
 mod state;
 mod terminal;
 mod tray;

@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::{
     io::{Read, Write},
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{Child, ChildStdin, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
@@ -10,7 +10,7 @@ use std::{
 };
 use tauri::{AppHandle, Emitter};
 
-use crate::{detect, logging, state};
+use crate::{detect, logging, process_util, state};
 
 const SESSION_ID: &str = "global";
 
@@ -99,7 +99,7 @@ fn spawn_shell_process(app: &AppHandle) -> Result<TerminalSession, String> {
         "[embedded-terminal] spawn shell executable={shell}"
     ));
 
-    let mut child = Command::new(&shell)
+    let mut child = process_util::command_hidden(&shell)
         .args([
             "-NoLogo",
             "-NoExit",

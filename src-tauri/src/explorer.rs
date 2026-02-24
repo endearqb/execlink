@@ -1,4 +1,4 @@
-use crate::{logging, state::AppResult};
+use crate::{logging, process_util, state::AppResult};
 use std::{
     path::Path,
     process::{Command, Output},
@@ -34,7 +34,7 @@ fn evaluate_shell_restart_output(output: &Output) -> AppResult<ShellRestartOutco
 
 fn restart_shell(shell_exe: &Path) -> AppResult<ShellRestartOutcome> {
     logging::log_line("[activate] running shell.exe -restart");
-    let output = Command::new(shell_exe)
+    let output = process_util::command_hidden(shell_exe)
         .arg("-restart")
         .output()
         .map_err(|e| format!("调用 shell.exe -restart 失败: {e}"))?;
@@ -45,7 +45,7 @@ fn restart_shell(shell_exe: &Path) -> AppResult<ShellRestartOutcome> {
 pub fn restart_explorer_fallback() -> AppResult<()> {
     logging::log_line("[activate] fallback restart explorer");
 
-    let _ = Command::new("taskkill")
+    let _ = process_util::command_hidden("taskkill")
         .args(["/f", "/im", "explorer.exe"])
         .status();
 
