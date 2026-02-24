@@ -18,7 +18,7 @@
             UpgradeCode="4741d285-ec78-5c71-bbea-1a81e704d147"
             Language="!(loc.TauriLanguage)"
             Manufacturer="endearqb"
-            Version="0.1.0">
+            Version="0.2.2">
 
         <Package Id="*"
                  Keywords="Installer"
@@ -46,8 +46,8 @@
         <Media Id="1" Cabinet="app.cab" EmbedCab="yes" />
 
 
-        <Icon Id="ProductIcon" SourceFile="D:\MyProject\CLI_Switch\src-tauri\target\release\resources\icon.ico"/>
-        <Icon Id="StartMenuIcon" SourceFile="D:\MyProject\CLI_Switch\src\assets\excelink_hybrid_0.ico"/>
+        <Icon Id="ProductIcon" SourceFile="..\..\..\..\resources\excelink_icon_fix_e.ico"/>
+        <Icon Id="StartMenuIcon" SourceFile="..\..\..\..\resources\excelink_icon_fix_e.ico"/>
         <Property Id="ARPPRODUCTICON" Value="ProductIcon" />
         <Property Id="ARPNOREPAIR" Value="yes" Secure="yes" />      <!-- Remove repair -->
         <SetProperty Id="ARPNOMODIFY" Value="1" After="InstallValidate" Sequence="execute"/>
@@ -111,9 +111,9 @@
                 <!-- Change the Root to HKCU for perUser installations -->
 </Component>
             <Component Id="Path" Guid="35e79b14-fdda-5cf8-9bd8-da96b790efc7" Win64="$(var.Win64)">
-                <File Id="Path" Source="D:\MyProject\CLI_Switch\src-tauri\target\release\execlink.exe" KeyPath="yes" Checksum="yes"/>
+                <File Id="Path" Source="$(var.SourceDir)" KeyPath="yes" Checksum="yes"/>
 </Component>
-            <Directory Id="Ic25152ba729e49328e157e00e815e301" Name="resources"><Component Id="Icca7c47eeb654d448948582f39b7b1bd" Guid="7c5fff93-198e-4dcb-9172-462b0084793d" Win64="$(var.Win64)" KeyPath="yes"><File Id="PathFile_Icca7c47eeb654d448948582f39b7b1bd" Source="D:\MyProject\CLI_Switch\src-tauri\resources\nilesoft.zip" /></Component></Directory>
+            <Directory Id="Ic25152ba729e49328e157e00e815e301" Name="resources"><Component Id="Icca7c47eeb654d448948582f39b7b1bd" Guid="7c5fff93-198e-4dcb-9172-462b0084793d" Win64="$(var.Win64)" KeyPath="yes"><File Id="PathFile_Icca7c47eeb654d448948582f39b7b1bd" Source="..\..\..\..\resources\nilesoft.zip" /></Component></Directory>
             <Component Id="CMP_UninstallShortcut" Guid="*">
 
                 <Shortcut Id="UninstallShortcut"
