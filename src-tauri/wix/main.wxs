@@ -18,7 +18,7 @@
             UpgradeCode="4741d285-ec78-5c71-bbea-1a81e704d147"
             Language="!(loc.TauriLanguage)"
             Manufacturer="endearqb"
-            Version="0.2.2">
+            Version="0.2.3">
 
         <Package Id="*"
                  Keywords="Installer"
@@ -36,6 +36,9 @@
         <Property Id="AUTOLAUNCHAPP" Secure="yes" />
         <!-- Property to forward cli args to the launched app to not lose those of the pre-update instance -->
         <Property Id="LAUNCHAPPARGS" Secure="yes" />
+        <!-- Uninstall options for bundled Nilesoft -->
+        <Property Id="EXECLINK_UNREG_NILESOFT" Value="1" Secure="yes" />
+        <Property Id="EXECLINK_REMOVE_NILESOFT_DIR" Value="1" Secure="yes" />
 
             <MajorUpgrade Schedule="afterInstallInitialize" AllowDowngrades="yes" />
 
@@ -65,6 +68,27 @@
         <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="!(loc.LaunchApp)" />
         <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1"/>
         <CustomAction Id="LaunchApplication" Impersonate="yes" FileKey="Path" ExeCommand="[LAUNCHAPPARGS]" Return="asyncNoWait" />
+        <CustomAction
+            Id="ExecLinkInstallAndRegisterNilesoft"
+            Directory="INSTALLDIR"
+            Execute="deferred"
+            Impersonate="yes"
+            ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -Command &quot;$ErrorActionPreference='Stop'; $log=Join-Path $env:TEMP 'execlink-nilesoft-install.log'; try { $zip='[INSTALLDIR]resources\nilesoft.zip'; $root=Join-Path $env:LOCALAPPDATA 'execlink\nilesoft-shell'; New-Item -ItemType Directory -Path $root -Force | Out-Null; Expand-Archive -Path $zip -DestinationPath $root -Force; $shell=(Get-ChildItem -Path $root -Recurse -Filter shell.exe -File | Select-Object -First 1 -ExpandProperty FullName); if (-not $shell) { throw 'shell.exe not found after extraction' }; &amp; $shell -register -restart; if ($LASTEXITCODE -ne 0) { throw ('register exit code ' + $LASTEXITCODE) }; 'ok' | Out-File -FilePath $log -Encoding UTF8 -Append } catch { $_ | Out-String | Out-File -FilePath $log -Encoding UTF8 -Append; exit 1 }&quot;"
+            Return="ignore" />
+        <CustomAction
+            Id="ExecLinkUnregisterNilesoft"
+            Directory="INSTALLDIR"
+            Execute="deferred"
+            Impersonate="yes"
+            ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -Command &quot;$ErrorActionPreference='Continue'; $log=Join-Path $env:TEMP 'execlink-nilesoft-unregister.log'; $root=Join-Path $env:LOCALAPPDATA 'execlink\nilesoft-shell'; try { if (Test-Path $root) { $shell=(Get-ChildItem -Path $root -Recurse -Filter shell.exe -File | Select-Object -First 1 -ExpandProperty FullName); if ($shell) { &amp; $shell -unregister -restart } }; 'done' | Out-File -FilePath $log -Encoding UTF8 -Append } catch { $_ | Out-String | Out-File -FilePath $log -Encoding UTF8 -Append; exit 1 }&quot;"
+            Return="ignore" />
+        <CustomAction
+            Id="ExecLinkRemoveNilesoftDir"
+            Directory="INSTALLDIR"
+            Execute="deferred"
+            Impersonate="yes"
+            ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -Command &quot;$ErrorActionPreference='Continue'; $log=Join-Path $env:TEMP 'execlink-nilesoft-remove.log'; $root=Join-Path $env:LOCALAPPDATA 'execlink\nilesoft-shell'; try { if (Test-Path $root) { Remove-Item -Path $root -Recurse -Force -ErrorAction Stop }; 'done' | Out-File -FilePath $log -Encoding UTF8 -Append } catch { $_ | Out-String | Out-File -FilePath $log -Encoding UTF8 -Append; exit 1 }&quot;"
+            Return="ignore" />
 
         <UI>
             <!-- launch app checkbox -->
@@ -83,6 +107,50 @@
                      Event="NewDialog"
                      Value="WelcomeDlg"
                      Order="2">1</Publish>
+            <Publish Dialog="MaintenanceTypeDlg"
+                     Control="RemoveButton"
+                     Event="SetProperty"
+                     Value="REMOVE=ALL"
+                     Order="3">1</Publish>
+            <Publish Dialog="MaintenanceTypeDlg"
+                     Control="RemoveButton"
+                     Event="NewDialog"
+                     Value="ExecLinkNilesoftUninstallDlg"
+                     Order="4">1</Publish>
+
+            <Dialog Id="ExecLinkNilesoftUninstallDlg" Width="370" Height="270" Title="ExecLink 卸载选项">
+                <Control Id="Header" Type="Text" X="20" Y="18" Width="330" Height="24" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Nilesoft 卸载选项" />
+                <Control Id="Description" Type="Text" X="20" Y="48" Width="330" Height="36" Transparent="yes" NoPrefix="yes" Text="请选择是否在卸载 ExecLink 时同时反注册或删除 Nilesoft。" />
+                <Control
+                    Id="UnregisterCheckbox"
+                    Type="CheckBox"
+                    X="20"
+                    Y="96"
+                    Width="330"
+                    Height="17"
+                    Property="EXECLINK_UNREG_NILESOFT"
+                    CheckBoxValue="1"
+                    Text="反注册 Nilesoft（执行 shell.exe -unregister -restart）" />
+                <Control
+                    Id="RemoveDirCheckbox"
+                    Type="CheckBox"
+                    X="20"
+                    Y="120"
+                    Width="330"
+                    Height="17"
+                    Property="EXECLINK_REMOVE_NILESOFT_DIR"
+                    CheckBoxValue="1"
+                    Text="删除 %LOCALAPPDATA%\execlink\nilesoft-shell 目录" />
+                <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+                    <Publish Event="NewDialog" Value="MaintenanceTypeDlg">1</Publish>
+                </Control>
+                <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
+                    <Publish Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
+                </Control>
+                <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+                    <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+                </Control>
+            </Dialog>
         </UI>
 
         <UIRef Id="WixUI_InstallDir" />
@@ -195,6 +263,15 @@
         <InstallExecuteSequence>
             <Custom Action='DownloadAndInvokeBootstrapper' Before='InstallFinalize'>
                 <![CDATA[NOT(REMOVE OR WVRTINSTALLED)]]>
+            </Custom>
+            <Custom Action="ExecLinkInstallAndRegisterNilesoft" Before="InstallFinalize">
+                <![CDATA[NOT Installed AND NOT REMOVE]]>
+            </Custom>
+            <Custom Action="ExecLinkUnregisterNilesoft" Before="RemoveFiles">
+                <![CDATA[REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND EXECLINK_UNREG_NILESOFT=1]]>
+            </Custom>
+            <Custom Action="ExecLinkRemoveNilesoftDir" After="ExecLinkUnregisterNilesoft">
+                <![CDATA[REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE AND EXECLINK_REMOVE_NILESOFT_DIR=1]]>
             </Custom>
         </InstallExecuteSequence>
 

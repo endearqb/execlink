@@ -168,6 +168,7 @@ export type CliInstallHintMap = Record<string, CliInstallHint>;
 export interface InstallPrereqStatus {
   node: boolean;
   npm: boolean;
+  uv: boolean;
   pwsh: boolean;
   winget: boolean;
   wsl: boolean;
@@ -181,7 +182,13 @@ export interface InstallLaunchRequest {
 export type QuickSetupPhase =
   | "idle"
   | "precheck"
+  | "precheck_uv"
   | "install"
+  | "install_uv"
+  | "verify_uv"
+  | "choose_source"
+  | "install_kimi"
+  | "verify_kimi"
   | "detect"
   | "auth"
   | "apply_menu"

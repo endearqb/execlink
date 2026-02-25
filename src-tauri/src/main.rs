@@ -26,6 +26,7 @@ fn main() {
             commands::get_install_prereq_status,
             commands::launch_cli_install,
             commands::launch_cli_auth,
+            commands::verify_kimi_installation,
             commands::run_cli_verify,
             commands::launch_cli_uninstall,
             commands::open_install_docs,

@@ -228,29 +228,50 @@ function SortableCliCard({
             aria-label={`${row.title} 拖拽排序`}
             aria-disabled={dragDisabled}
           >
-            <span className="group/drag-title relative inline-flex min-w-0 items-center">
-              <span className={titleClass}>{row.title}</span>
+            <span className="flex w-full min-w-0 items-center justify-between gap-1.5">
+              <span className="group/drag-title relative inline-flex min-w-0 items-center">
+                <span className={titleClass}>{row.title}</span>
+                <span
+                  className={`${HOVER_BUBBLE_BASE_CLASS} left-1/2 -translate-x-1/2 group-hover/drag-title:translate-y-0 group-hover/drag-title:opacity-100`}
+                >
+                  拖拽可排序
+                </span>
+              </span>
               <span
-                className={`${HOVER_BUBBLE_BASE_CLASS} left-1/2 -translate-x-1/2 group-hover/drag-title:translate-y-0 group-hover/drag-title:opacity-100`}
+                data-no-drag="true"
+                className="inline-flex shrink-0 items-center gap-1.5 max-[420px]:gap-1"
+                onPointerDown={(event) => event.stopPropagation()}
+                onMouseDown={(event) => event.stopPropagation()}
               >
-                拖拽可排序
+                <IconActionButton
+                  label={upgradeLabel}
+                  disabled={working || loading || !!installingKey || !row.hint?.upgrade_command}
+                  onClick={() => onLaunchUpgrade(row.key)}
+                  className="shrink-0"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
+                    <path d="M12 20V10" strokeLinecap="round" />
+                    <path d="m8 14 4-4 4 4" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M4 5h16" strokeLinecap="round" />
+                  </svg>
+                </IconActionButton>
+                <IconActionButton
+                  label={uninstallLabel}
+                  disabled={working || loading || !!installingKey}
+                  onClick={() => onLaunchUninstall(row.key)}
+                  className="shrink-0"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
+                    <path d="M4 7h16" strokeLinecap="round" />
+                    <path d="M9 7V5h6v2" strokeLinecap="round" />
+                    <path d="M8 7l1 12h6l1-12" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M10 11v5M14 11v5" strokeLinecap="round" />
+                  </svg>
+                </IconActionButton>
               </span>
             </span>
           </div>
           <div className="flex min-w-0 items-center justify-end gap-1.5 whitespace-nowrap max-[420px]:gap-1">
-            <span className={statusClass}>{row.detected ? "已检测到" : "未检测到"}</span>
-            <IconActionButton
-              label={upgradeLabel}
-              disabled={working || loading || !!installingKey || !row.hint?.upgrade_command}
-              onClick={() => onLaunchUpgrade(row.key)}
-              className="shrink-0"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
-                <path d="M12 20V10" strokeLinecap="round" />
-                <path d="m8 14 4-4 4 4" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M4 5h16" strokeLinecap="round" />
-              </svg>
-            </IconActionButton>
             <input
               className={`${INLINE_NAME_INPUT_CLASS} shrink-0`}
               value={row.displayName}
@@ -267,19 +288,6 @@ function SortableCliCard({
             >
               <Switch.Thumb className={SWITCH_THUMB_CLASS} />
             </Switch.Root>
-            <IconActionButton
-              label={uninstallLabel}
-              disabled={working || loading || !!installingKey}
-              onClick={() => onLaunchUninstall(row.key)}
-              className="shrink-0"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
-                <path d="M4 7h16" strokeLinecap="round" />
-                <path d="M9 7V5h6v2" strokeLinecap="round" />
-                <path d="M8 7l1 12h6l1-12" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M10 11v5M14 11v5" strokeLinecap="round" />
-              </svg>
-            </IconActionButton>
           </div>
         </div>
       ) : (

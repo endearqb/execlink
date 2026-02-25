@@ -390,6 +390,7 @@ pub struct CliInstallHint {
 pub struct InstallPrereqStatus {
     pub node: bool,
     pub npm: bool,
+    pub uv: bool,
     pub pwsh: bool,
     pub winget: bool,
     pub wsl: bool,

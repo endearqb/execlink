@@ -20,6 +20,7 @@ import {
   repairContextMenuHkcu,
   requestElevationAndRegister,
   runCliVerify,
+  verifyKimiInstallation,
   terminalCloseSession,
   terminalEnsureSession,
   terminalResize,
@@ -72,6 +73,7 @@ const EMPTY_INSTALL: InstallStatus = {
 const EMPTY_PREREQ: InstallPrereqStatus = {
   node: false,
   npm: false,
+  uv: false,
   pwsh: false,
   winget: false,
   wsl: false
@@ -92,7 +94,7 @@ const TERMINAL_MODE_OPTIONS: Array<{ value: AppConfig["terminal_mode"]; label: s
 ];
 
 const CLEANUP_CONFIRM_TOKEN = "CONFIRM_CLEANUP_EXECLINK";
-const APP_VERSION = "0.2.1";
+const APP_VERSION = "0.2.3";
 const GITHUB_REPO_URL = "https://github.com/endearqb/execlink";
 const INSTALL_RECHECK_INTERVAL_MS = 2000;
 const INSTALL_RECHECK_TIMEOUT_MS = 10 * 60 * 1000;
@@ -196,9 +198,32 @@ function buildKimiInstallCommand(useMirror: boolean) {
   ].join("\n");
 }
 
+function buildKimiUvBootstrapCommand() {
+  return [
+    "$ErrorActionPreference='Stop'",
+    "$__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
+    "if (-not $__execlink_uv_cmd) {",
+    "  Write-Host '[ExecLink] uv 未检测到，正在安装 uv...'",
+    "  Invoke-RestMethod -Uri 'https://astral.sh/uv/install.ps1' | Invoke-Expression",
+    "  $__execlink_uv_bin_dir = Join-Path $HOME '.local\\bin'",
+    "  if (Test-Path $__execlink_uv_bin_dir) {",
+    "    $env:Path = \"$__execlink_uv_bin_dir;$env:Path\"",
+    "  }",
+    "}",
+    "$__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
+    "if (-not $__execlink_uv_cmd) {",
+    "  throw 'uv not found after installation.'",
+    "}",
+    "uv --version"
+  ].join("\n");
+}
+
 function buildInstallCommandForMode(key: CliKey, installCommand: string, mode: InstallLaunchMode) {
   if (isKimiMirrorInstallKey(key)) {
-    return buildKimiInstallCommand(mode === "mirror");
+    if (mode === "mirror") {
+      return buildKimiInstallCommand(true);
+    }
+    return installCommand;
   }
   return installCommand;
 }
@@ -1042,6 +1067,7 @@ export function HomePage() {
       const precheckLines = [
         `Node.js: ${installPrereq.node ? "✅" : "❌"}`,
         `npm: ${installPrereq.npm ? "✅" : "❌"}`,
+        `uv: ${installPrereq.uv ? "✅" : "❌"}`,
         `pwsh: ${installPrereq.pwsh ? "✅" : "❌"}`,
         `winget: ${installPrereq.winget ? "✅" : "❌"}`,
         `WSL: ${installPrereq.wsl ? "✅" : "❌"}`
@@ -1057,7 +1083,7 @@ export function HomePage() {
           message: [
             `将启动 ${hint.display_name} 安装（${installSourceLabel}）。`,
             mirrorMode ? `\n镜像地址: ${UV_TUNA_SIMPLE_INDEX_URL}` : "",
-            isKimiInstall ? "将先检测 uv；如缺失将自动安装 uv，再执行 uv 安装 Kimi CLI。" : "",
+            mirrorMode && isKimiInstall ? "将先检测 uv；如缺失将自动安装 uv，再执行 uv 安装 Kimi CLI。" : "",
             `\n命令:\n${effectiveInstallCommand}`,
             `\n来源域名: ${hint.official_domain}`,
             `发行方: ${hint.publisher}`,
@@ -1149,6 +1175,7 @@ export function HomePage() {
       installHints,
       installPrereq.node,
       installPrereq.npm,
+      installPrereq.uv,
       installPrereq.pwsh,
       installPrereq.winget,
       installPrereq.wsl,
@@ -1389,6 +1416,8 @@ export function HomePage() {
       setTerminalState("running");
 
       try {
+        const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
         setQuickPhase("precheck", "检查安装前置环境...");
         const prereq = await getInstallPrereqStatus();
         setInstallPrereq(prereq);
@@ -1447,6 +1476,200 @@ export function HomePage() {
             });
             return;
           }
+        }
+
+        if (isKimiMirrorInstallKey(key)) {
+          let uvReady = prereq.uv;
+          if (!uvReady) {
+            setQuickPhase("precheck_uv", "未检测到 uv，准备安装 uv...");
+            const uvBootstrapCommand = buildKimiUvBootstrapCommand();
+            setQuickPhase("install_uv", "正在安装 uv...");
+            emitTerminalScriptPreview("Kimi 前置：安装 uv", uvBootstrapCommand);
+            const uvScriptResult = await terminalRunScript(uvBootstrapCommand);
+            if (!uvScriptResult.ok) {
+              setQuickSetup({
+                key,
+                phase: "failed",
+                running: false,
+                message: "内置终端执行 uv 安装命令失败",
+                detail: uvScriptResult.detail ?? null
+              });
+              setLastResult({
+                ...uvScriptResult,
+                code: "quick_setup_uv_install_failed",
+                message: "快速安装向导 uv 安装失败"
+              });
+              return;
+            }
+          } else {
+            setQuickPhase("precheck_uv", "已检测到 uv，跳过安装步骤。");
+          }
+
+          setQuickPhase("verify_uv", "正在检测 uv 是否可用...");
+          const uvStartedAt = Date.now();
+          while (Date.now() - uvStartedAt < QUICK_SETUP_DETECT_TIMEOUT_MS) {
+            const nextPrereq = await getInstallPrereqStatus();
+            setInstallPrereq(nextPrereq);
+            if (nextPrereq.uv) {
+              uvReady = true;
+              break;
+            }
+            await wait(INSTALL_RECHECK_INTERVAL_MS);
+          }
+
+          if (!uvReady) {
+            setQuickSetup({
+              key,
+              phase: "failed",
+              running: false,
+              message: "uv 安装后复检超时",
+              detail: "请检查终端输出，确认 uv 已安装后重试。"
+            });
+            setLastResult({
+              ok: false,
+              code: "quick_setup_uv_verify_failed",
+              message: "快速安装向导 uv 复检未通过",
+              detail: "未检测到 uv 命令。"
+            });
+            return;
+          }
+
+          setQuickPhase("choose_source", "请选择 Kimi 安装源...");
+          const useOfficialSource = await requestConfirm({
+            title: "选择 Kimi 安装源",
+            message: [
+              "请选择 Kimi CLI 安装源。",
+              "确认：官方源",
+              `取消：清华镜像（${UV_TUNA_SIMPLE_INDEX_URL}）`
+            ].join("\n"),
+            confirmText: "使用官方源",
+            cancelText: "使用清华源"
+          });
+
+          const installMode: InstallLaunchMode = useOfficialSource ? "official" : "mirror";
+          const sourceLabel = installMode === "official" ? "官方源" : "清华源";
+          const kimiInstallCommand =
+            installMode === "official"
+              ? "uv tool install kimi-cli"
+              : `uv tool install kimi-cli -i ${UV_TUNA_SIMPLE_INDEX_URL}`;
+
+          setQuickPhase("install_kimi", `正在执行 Kimi 安装命令（${sourceLabel}）...`);
+          emitTerminalScriptPreview(`Kimi 安装命令（${sourceLabel}）`, kimiInstallCommand);
+          const kimiInstallResult = await terminalRunScript(kimiInstallCommand);
+          if (!kimiInstallResult.ok) {
+            setQuickSetup({
+              key,
+              phase: "failed",
+              running: false,
+              message: "内置终端执行 Kimi 安装命令失败",
+              detail: kimiInstallResult.detail ?? null
+            });
+            setLastResult({
+              ...kimiInstallResult,
+              code: "quick_setup_kimi_install_failed",
+              message: "快速安装向导 Kimi 安装失败"
+            });
+            return;
+          }
+
+          setLastResult({
+            ok: true,
+            code: "quick_setup_kimi_install_started",
+            message: `已在内置终端执行 Kimi 安装命令（${sourceLabel}）`,
+            detail: kimiInstallCommand
+          });
+
+          setQuickPhase("verify_kimi", "等待 Kimi 安装检测结果...");
+          const kimiStartedAt = Date.now();
+          let kimiDetected = false;
+          let lastVerifyDetail: string | null = null;
+          while (Date.now() - kimiStartedAt < QUICK_SETUP_DETECT_TIMEOUT_MS) {
+            const verify = await verifyKimiInstallation();
+            lastVerifyDetail = verify.detail ?? null;
+            if (verify.ok) {
+              kimiDetected = true;
+              break;
+            }
+            await wait(INSTALL_RECHECK_INTERVAL_MS);
+          }
+
+          if (!kimiDetected) {
+            setQuickSetup({
+              key,
+              phase: "failed",
+              running: false,
+              message: "Kimi 安装后复检超时",
+              detail: lastVerifyDetail ?? "请检查终端输出，完成后可点击重试。"
+            });
+            setLastResult({
+              ok: false,
+              code: "quick_setup_kimi_verify_timeout",
+              message: "快速安装向导 Kimi 复检超时",
+              detail: lastVerifyDetail
+            });
+            return;
+          }
+
+          const latestStatuses = await detectClis();
+          setStatuses(latestStatuses);
+
+          setQuickPhase("apply_menu", "正在自动应用右键菜单配置...");
+          const payload = buildConfigWithCliDetected(configRef.current, key, true);
+          setConfig(payload);
+
+          const syncResult = await applyMenuConfigWithFallback(payload, "install");
+          if (!syncResult.ok) {
+            setQuickSetup({
+              key,
+              phase: "failed",
+              running: false,
+              message: "右键菜单自动应用失败",
+              detail: syncResult.detail ?? null
+            });
+            setLastResult(syncResult);
+            return;
+          }
+
+          if (syncResult.code === "menu_sync_fallback_applied") {
+            setQuickPhase("fallback", "主路径失败，已自动切换 HKCU 兜底修复...");
+          }
+
+          await refreshInitialState();
+
+          if (hint.requires_oauth && hint.auth_command) {
+            setQuickPhase("auth", "正在触发 Kimi 授权登录...");
+            emitTerminalScriptPreview(`${hint.display_name} 授权命令`, hint.auth_command);
+            const authResult = await terminalRunScript(hint.auth_command);
+
+            if (authResult.ok) {
+              setLastResult({
+                ok: true,
+                code: "quick_setup_auth_triggered",
+                message: "已触发 Kimi 登录，请在浏览器完成授权",
+                detail: hint.auth_command
+              });
+            } else {
+              setLastResult({
+                ...authResult,
+                code: "quick_setup_auth_trigger_failed",
+                message: "Kimi 登录命令触发失败"
+              });
+            }
+
+            setQuickSetup(EMPTY_QUICK_SETUP);
+            await closeEmbeddedTerminalSilently();
+            return;
+          }
+
+          setQuickSetup(EMPTY_QUICK_SETUP);
+          await closeEmbeddedTerminalSilently();
+          setLastResult({
+            ok: true,
+            code: "quick_setup_done",
+            message: `${hint.display_name} 快速安装向导完成`,
+            detail: syncResult.detail ?? null
+          });
+          return;
         }
 
         const quickInstallCommand = buildInstallCommandForMode(key, hint.install_command, "official");
@@ -1590,13 +1813,16 @@ export function HomePage() {
       applyMenuConfigWithFallback,
       buildConfigWithCliDetected,
       clearTerminalAutoCloseTimer,
+      closeEmbeddedTerminalSilently,
+      detectClis,
       emitTerminalScriptPreview,
       installHints,
       requestConfirm,
       refreshInitialState,
       runAction,
       scheduleTerminalAutoClose,
-      setQuickPhase
+      setQuickPhase,
+      verifyKimiInstallation
     ]
   );
 
@@ -1952,19 +2178,18 @@ export function HomePage() {
             </button>
           </div>
           <div className="flex items-center justify-end gap-1.5">
-            <button className={HEADER_ACTION_BUTTON_CLASS} onClick={onOneClickMaintenance} disabled={working || loading}>
-              一键维护 Nilesoft
-            </button>
             <button className={HEADER_ACTION_BUTTON_CLASS} onClick={onDetect} disabled={working || loading}>
               刷新 CLI 检测
             </button>
-            <button
-              className={HEADER_ACTION_BUTTON_CLASS}
-              onClick={onApply}
-              disabled={working || loading || !canOperate}
-            >
-              应用配置
-            </button>
+            {canOperate ? (
+              <button className={HEADER_ACTION_BUTTON_CLASS} onClick={onApply} disabled={working || loading}>
+                应用配置
+              </button>
+            ) : (
+              <button className={HEADER_ACTION_BUTTON_CLASS} onClick={onOneClickMaintenance} disabled={working || loading}>
+                一键安装修复
+              </button>
+            )}
           </div>
         </div>
       </header>

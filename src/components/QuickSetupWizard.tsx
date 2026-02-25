@@ -1,6 +1,6 @@
 import { type QuickSetupPhase, type QuickSetupStatus, CLI_DEFAULT_TITLES } from "../types/config";
 
-const PHASES: QuickSetupPhase[] = [
+const DEFAULT_PHASES: QuickSetupPhase[] = [
   "precheck",
   "install",
   "detect",
@@ -10,10 +10,29 @@ const PHASES: QuickSetupPhase[] = [
   "done"
 ];
 
+const KIMI_PHASES: QuickSetupPhase[] = [
+  "precheck_uv",
+  "install_uv",
+  "verify_uv",
+  "choose_source",
+  "install_kimi",
+  "verify_kimi",
+  "apply_menu",
+  "fallback",
+  "auth",
+  "done"
+];
+
 const PHASE_LABELS: Record<QuickSetupPhase, string> = {
   idle: "待开始",
   precheck: "前置检查",
+  precheck_uv: "检查 uv",
   install: "执行安装",
+  install_uv: "安装 uv",
+  verify_uv: "检测 uv",
+  choose_source: "选择安装源",
+  install_kimi: "安装 Kimi",
+  verify_kimi: "检测 Kimi",
   detect: "安装检测",
   auth: "授权登录",
   apply_menu: "应用菜单",
@@ -34,7 +53,8 @@ export function QuickSetupWizard({ status, onClose, onRetry }: Props) {
   }
 
   const targetTitle = CLI_DEFAULT_TITLES[status.key];
-  const activeIndex = PHASES.indexOf(status.phase);
+  const phases = status.key === "kimi" || status.key === "kimi_web" ? KIMI_PHASES : DEFAULT_PHASES;
+  const activeIndex = phases.indexOf(status.phase);
 
   return (
     <section className="grid gap-3 rounded-[1.5rem] border border-[#ddd5c9] bg-[var(--ui-base)] p-4 shadow-[inset_2px_2px_4px_#d5d0c4,inset_-2px_-2px_4px_#ffffff]">
@@ -63,7 +83,7 @@ export function QuickSetupWizard({ status, onClose, onRetry }: Props) {
       </div>
 
       <ol className="grid gap-1.5 text-xs">
-        {PHASES.map((phase, index) => {
+        {phases.map((phase, index) => {
           const done = activeIndex >= 0 && index < activeIndex;
           const active = status.phase === phase;
           return (

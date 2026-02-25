@@ -112,7 +112,7 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
     CliInstallProfile {
         key: "kimi",
         display_name: "Kimi",
-        install_command: "uv tool install kimi-cli",
+        install_command: "Invoke-RestMethod https://code.kimi.com/install.ps1 | Invoke-Expression",
         upgrade_command: Some("uv tool upgrade kimi-cli --no-cache"),
         uninstall_command: r#"$__execlink_kimi_tool_dir = Join-Path $env:APPDATA 'uv\tools\kimi-cli'; Get-Process -Name 'kimi' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; uv tool uninstall kimi-cli; if (Test-Path $__execlink_kimi_tool_dir) { Start-Sleep -Milliseconds 300; attrib -R "$__execlink_kimi_tool_dir\*" /S /D 2>$null | Out-Null; Remove-Item -Path $__execlink_kimi_tool_dir -Recurse -Force -ErrorAction SilentlyContinue }; if (Test-Path $__execlink_kimi_tool_dir) { throw 'Kimi tool directory still exists and could not be removed. Try closing all terminals and retrying as Administrator.' }"#,
         auth_command: Some("kimi login"),
@@ -128,7 +128,7 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
     CliInstallProfile {
         key: "kimi_web",
         display_name: "Kimi Web",
-        install_command: "uv tool install kimi-cli",
+        install_command: "Invoke-RestMethod https://code.kimi.com/install.ps1 | Invoke-Expression",
         upgrade_command: Some("uv tool upgrade kimi-cli --no-cache"),
         uninstall_command: r#"$__execlink_kimi_tool_dir = Join-Path $env:APPDATA 'uv\tools\kimi-cli'; Get-Process -Name 'kimi' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; uv tool uninstall kimi-cli; if (Test-Path $__execlink_kimi_tool_dir) { Start-Sleep -Milliseconds 300; attrib -R "$__execlink_kimi_tool_dir\*" /S /D 2>$null | Out-Null; Remove-Item -Path $__execlink_kimi_tool_dir -Recurse -Force -ErrorAction SilentlyContinue }; if (Test-Path $__execlink_kimi_tool_dir) { throw 'Kimi tool directory still exists and could not be removed. Try closing all terminals and retrying as Administrator.' }"#,
         auth_command: Some("kimi login"),
@@ -290,6 +290,58 @@ fn open_url_in_system_browser(url: &str) -> Result<(), String> {
 
 fn escape_ps_single_quoted(value: &str) -> String {
     value.replace('\'', "''")
+}
+
+fn user_profile_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE").map(PathBuf::from)
+}
+
+fn app_data_dir() -> Option<PathBuf> {
+    std::env::var_os("APPDATA").map(PathBuf::from)
+}
+
+fn uv_executable_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(user_profile) = user_profile_dir() {
+        candidates.push(user_profile.join(".local").join("bin").join("uv.exe"));
+        candidates.push(user_profile.join(".cargo").join("bin").join("uv.exe"));
+    }
+
+    candidates
+}
+
+fn resolve_uv_executable_path() -> Option<PathBuf> {
+    uv_executable_candidates()
+        .into_iter()
+        .find(|path| path.exists())
+}
+
+fn kimi_executable_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(app_data) = app_data_dir() {
+        candidates.push(
+            app_data
+                .join("uv")
+                .join("tools")
+                .join("kimi-cli")
+                .join("Scripts")
+                .join("kimi.exe"),
+        );
+    }
+
+    if let Some(user_profile) = user_profile_dir() {
+        candidates.push(user_profile.join(".local").join("bin").join("kimi.exe"));
+    }
+
+    candidates
+}
+
+fn resolve_kimi_executable_path() -> Option<PathBuf> {
+    kimi_executable_candidates()
+        .into_iter()
+        .find(|path| path.exists())
 }
 
 fn cli_command_for_key(key: &str) -> Option<&'static str> {
@@ -609,6 +661,7 @@ pub fn get_install_prereq_status() -> InstallPrereqStatus {
     InstallPrereqStatus {
         node: detect::command_exists_with_path("node", path_ref),
         npm: detect::command_exists_with_path("npm", path_ref),
+        uv: detect::command_exists_with_path("uv", path_ref) || resolve_uv_executable_path().is_some(),
         pwsh: detect::command_exists_with_path("pwsh", path_ref),
         winget: detect::command_exists_with_path("winget", path_ref),
         wsl: detect::command_exists_with_path("wsl", path_ref),
@@ -716,6 +769,29 @@ pub fn launch_cli_auth(key: String) -> ActionResult {
         },
         Err(error) => ActionResult::err("auth_launch_failed", "启动授权失败", error),
     }
+}
+
+#[tauri::command]
+pub fn verify_kimi_installation() -> ActionResult {
+    let detected = detect::detect_all_clis();
+    if detected.kimi || detected.kimi_web {
+        return ActionResult::ok_with_code("verify_detected", "Kimi 复检通过，已检测到可执行命令。");
+    }
+
+    if let Some(kimi_path) = resolve_kimi_executable_path() {
+        return ActionResult {
+            ok: true,
+            code: "verify_detected_abs_path".to_string(),
+            message: "Kimi 复检通过，已检测到本地安装路径。".to_string(),
+            detail: Some(kimi_path.display().to_string()),
+        };
+    }
+
+    ActionResult::err(
+        "verify_missing",
+        "Kimi 复检未通过",
+        "未检测到 kimi 命令或本地安装路径。",
+    )
 }
 
 #[tauri::command]
