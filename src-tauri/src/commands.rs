@@ -47,6 +47,7 @@ struct CliInstallProfile {
     key: &'static str,
     display_name: &'static str,
     install_command: &'static str,
+    upgrade_command: Option<&'static str>,
     uninstall_command: &'static str,
     auth_command: Option<&'static str>,
     verify_command: Option<&'static str>,
@@ -64,6 +65,7 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
         key: "claude",
         display_name: "Claude Code",
         install_command: "irm https://claude.ai/install.ps1 | iex",
+        upgrade_command: Some("claude update"),
         uninstall_command: r#"Remove-Item -Path "$env:USERPROFILE\.local\bin\claude.exe" -Force -ErrorAction SilentlyContinue; Remove-Item -Path "$env:USERPROFILE\.local\share\claude" -Recurse -Force -ErrorAction SilentlyContinue"#,
         auth_command: None,
         verify_command: Some("claude --version"),
@@ -79,6 +81,7 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
         key: "codex",
         display_name: "Codex",
         install_command: "npm install -g @openai/codex",
+        upgrade_command: Some("npm i -g @openai/codex@latest"),
         uninstall_command: "npm uninstall -g @openai/codex",
         auth_command: None,
         verify_command: Some("codex --version"),
@@ -94,6 +97,7 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
         key: "gemini",
         display_name: "Gemini CLI",
         install_command: "npm install -g @google/gemini-cli",
+        upgrade_command: Some("npm install -g @google/gemini-cli@latest"),
         uninstall_command: "npm uninstall -g @google/gemini-cli",
         auth_command: None,
         verify_command: Some("gemini --version"),
@@ -108,7 +112,8 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
     CliInstallProfile {
         key: "kimi",
         display_name: "Kimi",
-        install_command: "Invoke-RestMethod https://code.kimi.com/install.ps1 | Invoke-Expression",
+        install_command: "uv tool install kimi-cli",
+        upgrade_command: Some("uv tool upgrade kimi-cli --no-cache"),
         uninstall_command: r#"$__execlink_kimi_tool_dir = Join-Path $env:APPDATA 'uv\tools\kimi-cli'; Get-Process -Name 'kimi' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; uv tool uninstall kimi-cli; if (Test-Path $__execlink_kimi_tool_dir) { Start-Sleep -Milliseconds 300; attrib -R "$__execlink_kimi_tool_dir\*" /S /D 2>$null | Out-Null; Remove-Item -Path $__execlink_kimi_tool_dir -Recurse -Force -ErrorAction SilentlyContinue }; if (Test-Path $__execlink_kimi_tool_dir) { throw 'Kimi tool directory still exists and could not be removed. Try closing all terminals and retrying as Administrator.' }"#,
         auth_command: Some("kimi login"),
         verify_command: Some("kimi -v"),
@@ -123,7 +128,8 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
     CliInstallProfile {
         key: "kimi_web",
         display_name: "Kimi Web",
-        install_command: "Invoke-RestMethod https://code.kimi.com/install.ps1 | Invoke-Expression",
+        install_command: "uv tool install kimi-cli",
+        upgrade_command: Some("uv tool upgrade kimi-cli --no-cache"),
         uninstall_command: r#"$__execlink_kimi_tool_dir = Join-Path $env:APPDATA 'uv\tools\kimi-cli'; Get-Process -Name 'kimi' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; uv tool uninstall kimi-cli; if (Test-Path $__execlink_kimi_tool_dir) { Start-Sleep -Milliseconds 300; attrib -R "$__execlink_kimi_tool_dir\*" /S /D 2>$null | Out-Null; Remove-Item -Path $__execlink_kimi_tool_dir -Recurse -Force -ErrorAction SilentlyContinue }; if (Test-Path $__execlink_kimi_tool_dir) { throw 'Kimi tool directory still exists and could not be removed. Try closing all terminals and retrying as Administrator.' }"#,
         auth_command: Some("kimi login"),
         verify_command: Some("kimi -v"),
@@ -139,6 +145,7 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
         key: "qwencode",
         display_name: "Qwen Code",
         install_command: "npm install -g @qwen-code/qwen-code@latest",
+        upgrade_command: Some("npm install -g @qwen-code/qwen-code@latest"),
         uninstall_command: "npm uninstall -g @qwen-code/qwen-code",
         auth_command: None,
         verify_command: Some("qwen --version"),
@@ -154,6 +161,7 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
         key: "opencode",
         display_name: "OpenCode",
         install_command: "npm install -g opencode-ai",
+        upgrade_command: Some("opencode upgrade"),
         uninstall_command: "npm uninstall -g opencode-ai --no-progress",
         auth_command: None,
         verify_command: Some("opencode --version"),
@@ -210,6 +218,10 @@ fn ensure_install_ready(action: &str) -> Result<(PathBuf, PathBuf, InstallStatus
 
 fn prepare_config_for_save(mut incoming: AppConfig, persisted_runtime: state::RuntimeState) -> AppConfig {
     incoming.version = state::CONFIG_VERSION;
+    incoming.show_nilesoft_default_menus = false;
+    incoming.no_exit = true;
+    incoming.advanced_menu_mode = false;
+    incoming.menu_theme_enabled = false;
     // runtime 字段由后端维护，避免被前端旧状态覆盖。
     incoming.runtime = persisted_runtime;
     incoming
@@ -228,6 +240,7 @@ fn cli_install_hint(profile: &CliInstallProfile) -> CliInstallHint {
         key: profile.key.to_string(),
         display_name: profile.display_name.to_string(),
         install_command: profile.install_command.to_string(),
+        upgrade_command: profile.upgrade_command.map(|value| value.to_string()),
         uninstall_command: profile.uninstall_command.to_string(),
         auth_command: profile.auth_command.map(|value| value.to_string()),
         verify_command: profile.verify_command.map(|value| value.to_string()),

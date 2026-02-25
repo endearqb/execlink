@@ -150,6 +150,7 @@ export interface CliInstallHint {
   key: CliKey;
   display_name: string;
   install_command: string;
+  upgrade_command?: string | null;
   uninstall_command: string;
   auth_command?: string | null;
   verify_command?: string | null;

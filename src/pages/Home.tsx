@@ -34,7 +34,6 @@ import {
   CLI_DEFAULT_ORDER,
   CLI_DEFAULT_TITLES,
   DEFAULT_CONFIG,
-  TERMINAL_THEME_OPTIONS,
   normalizeCliOrder,
   type ActionResult,
   type AppConfig,
@@ -78,12 +77,11 @@ const EMPTY_PREREQ: InstallPrereqStatus = {
   wsl: false
 };
 
-type TabKey = "cli" | "menu" | "runtime";
+type TabKey = "cli" | "menu";
 
 const TABS: Array<{ key: TabKey; title: string }> = [
   { key: "cli", title: "CLI" },
-  { key: "menu", title: "菜单" },
-  { key: "runtime", title: "维护" }
+  { key: "menu", title: "菜单" }
 ];
 
 const TERMINAL_MODE_OPTIONS: Array<{ value: AppConfig["terminal_mode"]; label: string }> = [
@@ -162,11 +160,25 @@ function isKimiMirrorInstallKey(key: CliKey) {
   return key === "kimi" || key === "kimi_web";
 }
 
-function buildMirrorInstallCommand(installCommand: string) {
+function normalizeLockedConfig(config: AppConfig): AppConfig {
+  return {
+    ...config,
+    show_nilesoft_default_menus: false,
+    no_exit: true,
+    advanced_menu_mode: false,
+    menu_theme_enabled: false
+  };
+}
+
+function buildKimiInstallCommand(useMirror: boolean) {
+  const installCommand = useMirror
+    ? `uv tool install kimi-cli -i ${UV_TUNA_SIMPLE_INDEX_URL}`
+    : "uv tool install kimi-cli";
   return [
-    "$__execlink_prev_uv_default_index = $env:UV_DEFAULT_INDEX",
+    "$ErrorActionPreference='Stop'",
     "$__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
     "if (-not $__execlink_uv_cmd) {",
+    "  Write-Host '[ExecLink] uv 未检测到，正在安装 uv...'",
     "  Invoke-RestMethod -Uri 'https://astral.sh/uv/install.ps1' | Invoke-Expression",
     "  $__execlink_uv_bin_dir = Join-Path $HOME '.local\\bin'",
     "  if (Test-Path $__execlink_uv_bin_dir) {",
@@ -177,17 +189,18 @@ function buildMirrorInstallCommand(installCommand: string) {
     "if (-not $__execlink_uv_cmd) {",
     "  throw 'uv not found after installation.'",
     "}",
-    "try {",
-    `  $env:UV_DEFAULT_INDEX = '${UV_TUNA_SIMPLE_INDEX_URL}'`,
-    `  ${installCommand}`,
-    "} finally {",
-    "  if ($null -eq $__execlink_prev_uv_default_index) {",
-    "    Remove-Item Env:UV_DEFAULT_INDEX -ErrorAction SilentlyContinue",
-    "  } else {",
-    "    $env:UV_DEFAULT_INDEX = $__execlink_prev_uv_default_index",
-    "  }",
-    "}"
+    useMirror
+      ? `Write-Host '[ExecLink] 使用清华镜像安装 Kimi CLI: ${UV_TUNA_SIMPLE_INDEX_URL}'`
+      : "Write-Host '[ExecLink] 使用官方源安装 Kimi CLI'",
+    installCommand
   ].join("\n");
+}
+
+function buildInstallCommandForMode(key: CliKey, installCommand: string, mode: InstallLaunchMode) {
+  if (isKimiMirrorInstallKey(key)) {
+    return buildKimiInstallCommand(mode === "mirror");
+  }
+  return installCommand;
 }
 
 function hasTauriRuntime() {
@@ -410,10 +423,10 @@ export function HomePage() {
 
   const refreshInitialState = useCallback(async () => {
     const state = await getInitialState();
-    const normalizedConfig: AppConfig = {
+    const normalizedConfig = normalizeLockedConfig({
       ...state.config,
       cli_order: normalizeCliOrder(state.config.cli_order)
-    };
+    });
     setConfig(normalizedConfig);
     setStatuses(state.cli_status);
     setInstall(state.install_status);
@@ -551,20 +564,22 @@ export function HomePage() {
   );
 
   const buildConfigWithCliDetected = useCallback(
-    (base: AppConfig, key: CliKey, detected: boolean): AppConfig => ({
-      ...base,
-      cli_order: normalizeCliOrder(base.cli_order),
-      toggles: {
-        ...base.toggles,
-        [key]: detected
-      }
-    }),
+    (base: AppConfig, key: CliKey, detected: boolean): AppConfig =>
+      normalizeLockedConfig({
+        ...base,
+        cli_order: normalizeCliOrder(base.cli_order),
+        toggles: {
+          ...base.toggles,
+          [key]: detected
+        }
+      }),
     []
   );
 
   const applyMenuConfigWithFallback = useCallback(
     async (payload: AppConfig, reason: "install" | "uninstall" | "register"): Promise<ActionResult> => {
-      const applyResult = await applyConfig(payload);
+      const effectivePayload = normalizeLockedConfig(payload);
+      const applyResult = await applyConfig(effectivePayload);
       if (applyResult.ok) {
         const activateResult = await activateNow();
         if (activateResult.ok) {
@@ -577,7 +592,7 @@ export function HomePage() {
         }
       }
 
-      const fallbackResult = await repairContextMenuHkcu(payload);
+      const fallbackResult = await repairContextMenuHkcu(effectivePayload);
       if (!fallbackResult.ok) {
         return fallbackResult;
       }
@@ -804,10 +819,10 @@ export function HomePage() {
         return;
       }
 
-      const payload: AppConfig = {
+      const payload = normalizeLockedConfig({
         ...configRef.current,
         cli_order: normalizeCliOrder(configRef.current.cli_order)
-      };
+      });
       setConfig(payload);
 
       const syncResult = await applyMenuConfigWithFallback(payload, "register");
@@ -828,6 +843,70 @@ export function HomePage() {
         ok: false,
         code: "register_elevated_failed",
         message: "提权注册失败",
+        detail: String(error)
+      });
+    } finally {
+      setWorking(false);
+    }
+  }, [applyMenuConfigWithFallback, refreshInitialState]);
+
+  const onOneClickMaintenance = useCallback(async () => {
+    setWorking(true);
+    try {
+      const [detected, prereq] = await Promise.all([detectClis(), getInstallPrereqStatus()]);
+      setStatuses(detected);
+      setInstallPrereq(prereq);
+
+      let installState = await ensureNilesoftInstalled();
+      setInstall(installState);
+
+      if (!installState.registered || installState.needs_elevation) {
+        const elevateResult = await requestElevationAndRegister();
+        if (!elevateResult.ok) {
+          setLastResult({
+            ...elevateResult,
+            message: "一键维护失败：提权注册失败"
+          });
+          return;
+        }
+        installState = await ensureNilesoftInstalled();
+        setInstall(installState);
+      }
+
+      if (!installState.installed || !installState.registered || installState.needs_elevation) {
+        setLastResult({
+          ok: false,
+          code: "maintenance_register_incomplete",
+          message: "一键维护未完成",
+          detail: installState.message
+        });
+        return;
+      }
+
+      const payload = normalizeLockedConfig({
+        ...configRef.current,
+        cli_order: normalizeCliOrder(configRef.current.cli_order)
+      });
+      setConfig(payload);
+
+      const syncResult = await applyMenuConfigWithFallback(payload, "register");
+      if (!syncResult.ok) {
+        setLastResult(syncResult);
+        return;
+      }
+
+      await refreshInitialState();
+      setLastResult({
+        ok: true,
+        code: "maintenance_done",
+        message: "一键维护完成（检测 / 安装 / 注册 / 修复）",
+        detail: syncResult.detail ?? installState.message
+      });
+    } catch (error) {
+      setLastResult({
+        ok: false,
+        code: "maintenance_failed",
+        message: "一键维护失败",
         detail: String(error)
       });
     } finally {
@@ -968,8 +1047,9 @@ export function HomePage() {
         `WSL: ${installPrereq.wsl ? "✅" : "❌"}`
       ];
 
-      const effectiveInstallCommand = mirrorMode ? buildMirrorInstallCommand(hint.install_command) : hint.install_command;
+      const effectiveInstallCommand = buildInstallCommandForMode(key, hint.install_command, mode);
       const installSourceLabel = mirrorMode ? "清华源" : "官方源";
+      const isKimiInstall = isKimiMirrorInstallKey(key);
 
       if (!options?.skipPrimaryConfirm) {
         const firstConfirm = await requestConfirm({
@@ -977,7 +1057,7 @@ export function HomePage() {
           message: [
             `将启动 ${hint.display_name} 安装（${installSourceLabel}）。`,
             mirrorMode ? `\n镜像地址: ${UV_TUNA_SIMPLE_INDEX_URL}` : "",
-            mirrorMode ? "本次仅对当前安装命令临时设置 UV_DEFAULT_INDEX，不修改系统全局配置。" : "",
+            isKimiInstall ? "将先检测 uv；如缺失将自动安装 uv，再执行 uv 安装 Kimi CLI。" : "",
             `\n命令:\n${effectiveInstallCommand}`,
             `\n来源域名: ${hint.official_domain}`,
             `发行方: ${hint.publisher}`,
@@ -1081,16 +1161,111 @@ export function HomePage() {
 
   const onLaunchInstall = useCallback(
     async (key: CliKey) => {
+      if (isKimiMirrorInstallKey(key)) {
+        const useMirror = await requestConfirm({
+          title: "选择 Kimi 安装源",
+          message: [
+            "是否使用清华镜像源安装 Kimi CLI？",
+            `镜像地址：${UV_TUNA_SIMPLE_INDEX_URL}`,
+            "\n若选择官方源，将从官方源安装。"
+          ].join("\n"),
+          confirmText: "使用清华源",
+          cancelText: "使用官方源"
+        });
+        await launchInstall(key, { mode: useMirror ? "mirror" : "official" });
+        return;
+      }
       await launchInstall(key, { mode: "official" });
     },
-    [launchInstall]
+    [launchInstall, requestConfirm]
   );
 
-  const onLaunchMirrorInstall = useCallback(
+  const onLaunchUpgrade = useCallback(
     async (key: CliKey) => {
-      await launchInstall(key, { mode: "mirror" });
+      const hint = installHints[key];
+      const displayName = hint?.display_name ?? CLI_DEFAULT_TITLES[key];
+      const upgradeCommand = hint?.upgrade_command?.trim();
+
+      if (!upgradeCommand) {
+        setLastResult({
+          ok: false,
+          code: "upgrade_command_missing",
+          message: "未找到升级指引",
+          detail: `${displayName} 暂未配置升级命令。`
+        });
+        return;
+      }
+
+      const accepted = await requestConfirm({
+        title: `确认升级 ${displayName}`,
+        message: [`将执行以下升级命令：`, `\n${upgradeCommand}`, "\n命令会在内置终端执行，继续吗？"].join("\n"),
+        confirmText: "继续升级",
+        cancelText: "取消"
+      });
+      if (!accepted) {
+        setLastResult({
+          ok: false,
+          code: "upgrade_cancelled",
+          message: "已取消升级",
+          detail: null
+        });
+        return;
+      }
+
+      clearTerminalAutoCloseTimer();
+      setQuickSetup(EMPTY_QUICK_SETUP);
+      setFocusedCliKey(key);
+      setWorking(true);
+      try {
+        const readyResult = await terminalEnsureSession();
+        if (!readyResult.ok) {
+          setLastResult(readyResult);
+          return;
+        }
+        setTerminalState("running");
+        emitTerminalScriptPreview(`${displayName} 升级命令`, upgradeCommand);
+        const upgradeResult = await terminalRunScript(upgradeCommand);
+        if (!upgradeResult.ok) {
+          setLastResult(upgradeResult);
+          return;
+        }
+
+        const verify = await runCliVerify(key);
+        if (!verify.ok) {
+          setLastResult({
+            ...verify,
+            message: `${displayName} 升级后复检未通过`
+          });
+          return;
+        }
+
+        const latestStatuses = await detectClis();
+        setStatuses(latestStatuses);
+        setLastResult({
+          ok: true,
+          code: "upgrade_done",
+          message: `${displayName} 升级完成`,
+          detail: upgradeCommand
+        });
+        scheduleTerminalAutoClose(3000);
+      } catch (error) {
+        setLastResult({
+          ok: false,
+          code: "upgrade_failed",
+          message: "升级失败",
+          detail: String(error)
+        });
+      } finally {
+        setWorking(false);
+      }
     },
-    [launchInstall]
+    [
+      clearTerminalAutoCloseTimer,
+      emitTerminalScriptPreview,
+      installHints,
+      requestConfirm,
+      scheduleTerminalAutoClose
+    ]
   );
 
   const onLaunchUninstall = useCallback(
@@ -1274,9 +1449,10 @@ export function HomePage() {
           }
         }
 
+        const quickInstallCommand = buildInstallCommandForMode(key, hint.install_command, "official");
         setQuickPhase("install", "正在执行安装命令...");
-        emitTerminalScriptPreview(`${hint.display_name} 安装命令`, hint.install_command);
-        const installScriptResult = await terminalRunScript(hint.install_command);
+        emitTerminalScriptPreview(`${hint.display_name} 安装命令`, quickInstallCommand);
+        const installScriptResult = await terminalRunScript(quickInstallCommand);
         if (!installScriptResult.ok) {
           setQuickSetup({
             key,
@@ -1292,7 +1468,7 @@ export function HomePage() {
           ok: true,
           code: "quick_setup_install_started",
           message: `已在内置终端执行 ${hint.display_name} 安装命令`,
-          detail: hint.install_command
+          detail: quickInstallCommand
         });
 
         setQuickPhase("detect", "等待安装检测结果...");
@@ -1462,10 +1638,10 @@ export function HomePage() {
     if (!ensureReady("应用配置")) {
       return;
     }
-    const payload: AppConfig = {
+    const payload = normalizeLockedConfig({
       ...config,
       cli_order: normalizeCliOrder(config.cli_order)
-    };
+    });
     const applyResult = await runAction(() => applyConfig(payload));
     if (!applyResult.ok) {
       return;
@@ -1517,10 +1693,10 @@ export function HomePage() {
   }, [refreshInitialState, requestConfirm, runAction]);
 
   const onRepairMenuFallback = useCallback(async () => {
-    const payload: AppConfig = {
+    const payload = normalizeLockedConfig({
       ...config,
       cli_order: normalizeCliOrder(config.cli_order)
-    };
+    });
     const result = await runAction(() => repairContextMenuHkcu(payload));
     if (!result.ok) {
       return;
@@ -1776,6 +1952,9 @@ export function HomePage() {
             </button>
           </div>
           <div className="flex items-center justify-end gap-1.5">
+            <button className={HEADER_ACTION_BUTTON_CLASS} onClick={onOneClickMaintenance} disabled={working || loading}>
+              一键维护 Nilesoft
+            </button>
             <button className={HEADER_ACTION_BUTTON_CLASS} onClick={onDetect} disabled={working || loading}>
               刷新 CLI 检测
             </button>
@@ -1857,7 +2036,7 @@ export function HomePage() {
                 onOpenInstallDocs={onOpenInstallDocs}
                 onOpenNodejsDownload={onOpenNodejsDownload}
                 onLaunchInstall={onLaunchInstall}
-                onLaunchMirrorInstall={onLaunchMirrorInstall}
+                onLaunchUpgrade={onLaunchUpgrade}
                 onLaunchUninstall={onLaunchUninstall}
                 onQuickSetup={onQuickSetup}
                 onTerminalEnsureReady={onTerminalEnsureReady}
@@ -1876,20 +2055,6 @@ export function HomePage() {
                   checked={config.enable_context_menu}
                   onChange={(checked) => setConfig((prev) => ({ ...prev, enable_context_menu: checked }))}
                   description="关闭后仅保留配置文件，不显示 AI 菜单项"
-                />
-                <ToggleRow
-                  title="显示 Nilesoft 默认菜单"
-                  checked={config.show_nilesoft_default_menus}
-                  onChange={(checked) =>
-                    setConfig((prev) => ({ ...prev, show_nilesoft_default_menus: checked }))
-                  }
-                  description="关闭时仅保留本应用生成的 AI 菜单"
-                />
-                <ToggleRow
-                  title="PowerShell 使用 -NoExit"
-                  checked={config.no_exit}
-                  onChange={(checked) => setConfig((prev) => ({ ...prev, no_exit: checked }))}
-                  description="关闭后终端执行命令后可自动退出"
                 />
                 <label className={FIELD_CLASS}>
                   <span className={FIELD_LABEL_CLASS}>终端运行器</span>
@@ -1915,209 +2080,125 @@ export function HomePage() {
                     </span>
                   </span>
                 </label>
-                <details className={`rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${OUTSET_SMALL}`}>
-                  <summary className="cursor-pointer select-none text-sm font-semibold text-[var(--ui-text)]">
-                    高级模式（默认不影响右键主题）
-                  </summary>
-                  <div className="mt-3 grid gap-3">
-                    <ToggleRow
-                      title="启用高级右键模式"
-                      checked={config.advanced_menu_mode}
-                      onChange={(checked) => setConfig((prev) => ({ ...prev, advanced_menu_mode: checked }))}
-                      description="关闭时右键菜单强制走极简命令；主题仅用于安装终端。"
-                    />
-                    <ToggleRow
-                      title="右键菜单启用主题注入"
-                      checked={config.menu_theme_enabled}
-                      onChange={(checked) => setConfig((prev) => ({ ...prev, menu_theme_enabled: checked }))}
-                      disabled={!config.advanced_menu_mode}
-                      description="仅在“高级右键模式”开启后生效。"
-                    />
-                    <label className={FIELD_CLASS}>
-                      <span className={FIELD_LABEL_CLASS}>终端主题（VS Code 映射）</span>
-                      <span className="relative block">
-                        <select
-                          className={SELECT_CLASS}
-                          value={config.terminal_theme_id}
-                          onChange={(event) =>
-                            setConfig((prev) => ({
-                              ...prev,
-                              terminal_theme_id: event.target.value
-                            }))
-                          }
-                        >
-                          {TERMINAL_THEME_OPTIONS.map((theme) => (
-                            <option key={theme.id} value={theme.id}>
-                              {theme.name}
-                            </option>
-                          ))}
-                        </select>
-                        <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-[var(--ui-light)]">
-                          v
-                        </span>
-                      </span>
-                    </label>
-                    <label className={FIELD_CLASS}>
-                      <span className={FIELD_LABEL_CLASS}>主题模式</span>
-                      <span className="relative block">
-                        <select
-                          className={SELECT_CLASS}
-                          value={config.terminal_theme_mode}
-                          onChange={(event) =>
-                            setConfig((prev) => ({
-                              ...prev,
-                              terminal_theme_mode: event.target.value as AppConfig["terminal_theme_mode"]
-                            }))
-                          }
-                        >
-                          <option value="auto">Auto（优先当前主题）</option>
-                          <option value="dark">Dark</option>
-                          <option value="light">Light</option>
-                        </select>
-                        <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-[var(--ui-light)]">
-                          v
-                        </span>
-                      </span>
-                    </label>
-                    <label className={FIELD_CLASS}>
-                      <span className={FIELD_LABEL_CLASS}>PowerShell 提示符风格</span>
-                      <span className="relative block">
-                        <select
-                          className={SELECT_CLASS}
-                          value={config.ps_prompt_style}
-                          onChange={(event) =>
-                            setConfig((prev) => ({
-                              ...prev,
-                              ps_prompt_style: event.target.value as AppConfig["ps_prompt_style"]
-                            }))
-                          }
-                        >
-                          <option value="basic">基础彩色提示符</option>
-                          <option value="none">不改提示符</option>
-                        </select>
-                        <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-[var(--ui-light)]">
-                          v
-                        </span>
-                      </span>
-                    </label>
-                  </div>
-                </details>
               </section>
-            </div>
-          </Tabs.Panel>
+              <details className={`rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${OUTSET_SMALL}`}>
+                <summary className="cursor-pointer select-none text-sm font-semibold text-[var(--ui-text)]">
+                  高级维护
+                </summary>
+                <div className="mt-3 grid gap-4">
+                  <section className={PANEL_BLOCK_CLASS}>
+                    <h2 className={PANEL_TITLE_CLASS}>Nilesoft 安装状态</h2>
+                    <p className="text-sm text-[var(--ui-muted)]">{install.message}</p>
+                    <p>
+                      已安装: <strong>{install.installed ? "是" : "否"}</strong>
+                    </p>
+                    <p>
+                      已注册: <strong>{install.registered && !install.needs_elevation ? "是" : "否"}</strong>
+                    </p>
+                    <p>
+                      Shell 路径: <code>{install.shell_exe ?? "未检测到"}</code>
+                    </p>
+                    <p>
+                      配置根: <code>{install.config_root ?? "未解析"}</code>
+                    </p>
+                    <div className="flex flex-wrap gap-2.5">
+                      <button className={RUNTIME_PRIMARY_BUTTON_CLASS} onClick={onEnsureInstall} disabled={working || loading}>
+                        安装/修复 Nilesoft
+                      </button>
+                      {install.installed && (!install.registered || install.needs_elevation) ? (
+                        <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={onRetryElevation} disabled={working || loading}>
+                          提权重试注册
+                        </button>
+                      ) : null}
+                    </div>
+                  </section>
 
-          <Tabs.Panel value="runtime" className="p-0">
-            <div className={PANEL_CONTENT_CLASS}>
-              <section className={PANEL_BLOCK_CLASS}>
-                <h2 className={PANEL_TITLE_CLASS}>Nilesoft 安装状态</h2>
-                <p className="text-sm text-[var(--ui-muted)]">{install.message}</p>
-                <p>
-                  已安装: <strong>{install.installed ? "是" : "否"}</strong>
-                </p>
-                <p>
-                  已注册: <strong>{install.registered && !install.needs_elevation ? "是" : "否"}</strong>
-                </p>
-                <p>
-                  Shell 路径: <code>{install.shell_exe ?? "未检测到"}</code>
-                </p>
-                <p>
-                  配置根: <code>{install.config_root ?? "未解析"}</code>
-                </p>
-                <div className="flex flex-wrap gap-2.5">
-                  <button className={RUNTIME_PRIMARY_BUTTON_CLASS} onClick={onEnsureInstall} disabled={working || loading}>
-                    安装/修复 Nilesoft
-                  </button>
-                  {install.installed && (!install.registered || install.needs_elevation) ? (
-                    <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={onRetryElevation} disabled={working || loading}>
-                      提权重试注册
-                    </button>
+                  <section className={PANEL_BLOCK_CLASS}>
+                    <h2 className={PANEL_TITLE_CLASS}>恢复与清理</h2>
+                    <p className="text-sm text-[var(--ui-muted)]">
+                      用于卸载或异常恢复。建议先尝试反注册，再按需清理
+                      <code>%LOCALAPPDATA%/execlink/</code> 数据目录。
+                    </p>
+                    <div className="flex flex-wrap gap-2.5">
+                      <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={onAttemptUnregister} disabled={working || loading}>
+                        尝试反注册 Nilesoft
+                      </button>
+                      <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={onRepairMenuFallback} disabled={working || loading}>
+                        HKCU 一键修复菜单
+                      </button>
+                      <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={onRemoveMenuFallback} disabled={working || loading}>
+                        移除 HKCU 兜底菜单
+                      </button>
+                      <button className={RUNTIME_DANGER_BUTTON_CLASS} onClick={onCleanupData} disabled={working || loading}>
+                        清理应用数据
+                      </button>
+                    </div>
+                    <div className={`grid gap-2 rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${OUTSET_SMALL}`}>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-semibold text-[var(--ui-text)]">历史 HKCU 分组清理</span>
+                        <button
+                          className={RUNTIME_SECONDARY_BUTTON_CLASS}
+                          onClick={() => void refreshHkcuGroups(false)}
+                          disabled={working || loading || loadingHkcuGroups}
+                        >
+                          {loadingHkcuGroups ? "检测中..." : "检测历史分组"}
+                        </button>
+                        <button
+                          className={RUNTIME_DANGER_BUTTON_CLASS}
+                          onClick={onDeleteSelectedHkcuGroups}
+                          disabled={working || loading || selectedHkcuGroupKeys.length === 0}
+                        >
+                          删除选中分组
+                        </button>
+                      </div>
+                      {hkcuGroups.length === 0 ? (
+                        <p className="text-xs text-[var(--ui-muted)]">未检测到可清理的历史分组。</p>
+                      ) : (
+                        <div className="grid gap-1.5">
+                          {hkcuGroups.map((group) => {
+                            const checked = selectedHkcuGroupKeys.includes(group.key);
+                            return (
+                              <label
+                                key={group.key}
+                                className={`flex items-start gap-2 rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[var(--ui-base)] px-2.5 py-2 text-xs ${OUTSET_SMALL}`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(event) => onToggleHkcuGroupSelection(group.key, event.target.checked)}
+                                  disabled={working || loading}
+                                  className="mt-0.5"
+                                />
+                                <span className="grid gap-0.5">
+                                  <span className="font-semibold text-[var(--ui-text)]">
+                                    {group.title}{" "}
+                                    <span className="font-mono text-[11px] text-[var(--ui-muted)]">[{group.key}]</span>
+                                  </span>
+                                  <span className="text-[11px] text-[var(--ui-muted)]">
+                                    出现位置：{group.roots.join(" | ")}
+                                  </span>
+                                </span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </section>
+
+                  {!canOperate ? (
+                    <section className={`grid gap-2 rounded-[var(--radius-lg)] border border-[#ddcfc2] bg-[#ecddd8] p-3 ${INSET_SMALL}`}>
+                      <h2 className={PANEL_TITLE_CLASS}>操作前置条件</h2>
+                      <p className="text-sm text-[#7d473e]">
+                        当前状态未满足“已安装 + 已注册”，已阻止“应用配置（自动生效）”。
+                      </p>
+                      <p className="text-sm text-[#7d473e]">
+                        请先点击“安装/修复 Nilesoft”，如提示失败再点击“提权重试注册”。
+                      </p>
+                    </section>
                   ) : null}
                 </div>
-              </section>
-
-              <section className={PANEL_BLOCK_CLASS}>
-                <h2 className={PANEL_TITLE_CLASS}>恢复与清理</h2>
-                <p className="text-sm text-[var(--ui-muted)]">
-                  用于卸载或异常恢复。建议先尝试反注册，再按需清理
-                  <code>%LOCALAPPDATA%/execlink/</code> 数据目录。
-                </p>
-                <div className="flex flex-wrap gap-2.5">
-                  <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={onAttemptUnregister} disabled={working || loading}>
-                    尝试反注册 Nilesoft
-                  </button>
-                  <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={onRepairMenuFallback} disabled={working || loading}>
-                    HKCU 一键修复菜单
-                  </button>
-                  <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={onRemoveMenuFallback} disabled={working || loading}>
-                    移除 HKCU 兜底菜单
-                  </button>
-                  <button className={RUNTIME_DANGER_BUTTON_CLASS} onClick={onCleanupData} disabled={working || loading}>
-                    清理应用数据
-                  </button>
-                </div>
-                <div className={`grid gap-2 rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${OUTSET_SMALL}`}>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-semibold text-[var(--ui-text)]">历史 HKCU 分组清理</span>
-                    <button
-                      className={RUNTIME_SECONDARY_BUTTON_CLASS}
-                      onClick={() => void refreshHkcuGroups(false)}
-                      disabled={working || loading || loadingHkcuGroups}
-                    >
-                      {loadingHkcuGroups ? "检测中..." : "检测历史分组"}
-                    </button>
-                    <button
-                      className={RUNTIME_DANGER_BUTTON_CLASS}
-                      onClick={onDeleteSelectedHkcuGroups}
-                      disabled={working || loading || selectedHkcuGroupKeys.length === 0}
-                    >
-                      删除选中分组
-                    </button>
-                  </div>
-                  {hkcuGroups.length === 0 ? (
-                    <p className="text-xs text-[var(--ui-muted)]">未检测到可清理的历史分组。</p>
-                  ) : (
-                    <div className="grid gap-1.5">
-                      {hkcuGroups.map((group) => {
-                        const checked = selectedHkcuGroupKeys.includes(group.key);
-                        return (
-                          <label
-                            key={group.key}
-                            className={`flex items-start gap-2 rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[var(--ui-base)] px-2.5 py-2 text-xs ${OUTSET_SMALL}`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={(event) => onToggleHkcuGroupSelection(group.key, event.target.checked)}
-                              disabled={working || loading}
-                              className="mt-0.5"
-                            />
-                            <span className="grid gap-0.5">
-                              <span className="font-semibold text-[var(--ui-text)]">
-                                {group.title} <span className="font-mono text-[11px] text-[var(--ui-muted)]">[{group.key}]</span>
-                              </span>
-                              <span className="text-[11px] text-[var(--ui-muted)]">
-                                出现位置：{group.roots.join(" | ")}
-                              </span>
-                            </span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </section>
-
-              {!canOperate ? (
-                <section className={`grid gap-2 rounded-[var(--radius-lg)] border border-[#ddcfc2] bg-[#ecddd8] p-3 ${INSET_SMALL}`}>
-                  <h2 className={PANEL_TITLE_CLASS}>操作前置条件</h2>
-                  <p className="text-sm text-[#7d473e]">
-                    当前状态未满足“已安装 + 已注册”，已阻止“应用配置（自动生效）”。
-                  </p>
-                  <p className="text-sm text-[#7d473e]">
-                    请先点击“安装/修复 Nilesoft”，如提示失败再点击“提权重试注册”。
-                  </p>
-                </section>
-              ) : null}
+              </details>
             </div>
           </Tabs.Panel>
 

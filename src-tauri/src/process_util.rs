@@ -22,7 +22,7 @@ pub fn command_hidden<S: AsRef<OsStr>>(program: S) -> Command {
 #[cfg(windows)]
 fn read_windows_path_from_scope(scope: &str) -> Option<String> {
     let script = format!(
-        "$v=[Environment]::GetEnvironmentVariable('Path','{scope}'); if ($v) {{ [Environment]::ExpandEnvironmentVariables($v) }}"
+        "$utf8=[System.Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=$utf8; $OutputEncoding=$utf8; $v=[Environment]::GetEnvironmentVariable('Path','{scope}'); if ($v) {{ [Environment]::ExpandEnvironmentVariables($v) }}"
     );
     let output = command_hidden("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])

@@ -170,27 +170,24 @@ fn command_output_detail(stdout: &[u8], stderr: &[u8]) -> String {
 }
 
 fn query_registered_shell_dll_from_registry() -> Option<PathBuf> {
-    let key = format!(r"HKCR\CLSID\{NILESOFT_CLSID}\InprocServer32");
-    let output = process_util::command_hidden("reg")
-        .args(["query", &key, "/ve"])
+    let key = format!(r"Registry::HKEY_CLASSES_ROOT\CLSID\{}\InprocServer32", NILESOFT_CLSID);
+    let script = format!(
+        "$utf8=[System.Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=$utf8; $OutputEncoding=$utf8; $v=(Get-ItemProperty -LiteralPath '{key}' -Name '(default)' -ErrorAction SilentlyContinue).'(default)'; if ($v) {{ Write-Output $v }}"
+    );
+    let output = process_util::command_hidden("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
         .output()
         .ok()?;
     if !output.status.success() {
         return None;
     }
 
-    let text = String::from_utf8_lossy(&output.stdout);
-    for line in text.lines() {
-        let Some((_, value)) = line.split_once("REG_SZ") else {
-            continue;
-        };
-        let path = value.trim();
-        if path.is_empty() {
-            continue;
-        }
-        return Some(PathBuf::from(path));
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(path))
     }
-    None
 }
 
 pub fn registered_shell_root_dir() -> Option<PathBuf> {

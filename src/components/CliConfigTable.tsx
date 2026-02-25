@@ -80,7 +80,7 @@ interface CliConfigTableProps {
   onOpenInstallDocs: (key: CliKey) => void | Promise<void>;
   onOpenNodejsDownload: () => void | Promise<void>;
   onLaunchInstall: (key: CliKey) => void | Promise<void>;
-  onLaunchMirrorInstall: (key: CliKey) => void | Promise<void>;
+  onLaunchUpgrade: (key: CliKey) => void | Promise<void>;
   onLaunchUninstall: (key: CliKey) => void | Promise<void>;
   onQuickSetup: (key: CliKey) => void | Promise<void>;
   onTerminalEnsureReady: () => void | Promise<void>;
@@ -104,7 +104,7 @@ interface SortableCliCardProps {
   onOpenInstallDocs: (key: CliKey) => void | Promise<void>;
   onOpenNodejsDownload: () => void | Promise<void>;
   onLaunchInstall: (key: CliKey) => void | Promise<void>;
-  onLaunchMirrorInstall: (key: CliKey) => void | Promise<void>;
+  onLaunchUpgrade: (key: CliKey) => void | Promise<void>;
   onLaunchUninstall: (key: CliKey) => void | Promise<void>;
   onQuickSetup: (key: CliKey) => void | Promise<void>;
   onTerminalEnsureReady: () => void | Promise<void>;
@@ -161,7 +161,7 @@ function SortableCliCard({
   onOpenInstallDocs,
   onOpenNodejsDownload,
   onLaunchInstall,
-  onLaunchMirrorInstall,
+  onLaunchUpgrade,
   onLaunchUninstall,
   onQuickSetup,
   onTerminalEnsureReady,
@@ -206,11 +206,10 @@ function SortableCliCard({
   const nodeTagClass = `rounded-[var(--radius-pill)] border border-[#ddd5c9] bg-[#e8e1d6] px-2.5 py-0.5 text-[10px] text-[#5f564d] ${OUTSET_SMALL}`;
   const quickSetupLabel = "快速安装向导";
   const installOnlyLabel = installingKey === row.key ? "安装中..." : "仅执行安装";
-  const mirrorInstallLabel = `${row.title} 清华源安装`;
+  const upgradeLabel = `升级 ${row.title}`;
   const uninstallLabel = `卸载 ${row.title}`;
   const copyLabel = `复制 ${row.title} 安装命令`;
   const docsLabel = `打开 ${row.title} 安装说明`;
-  const showMirrorInstall = (row.key === "kimi" || row.key === "kimi_web") && !row.detected;
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -237,9 +236,21 @@ function SortableCliCard({
                 拖拽可排序
               </span>
             </span>
-            <span className={`${statusClass} max-[760px]:hidden`}>{row.detected ? "已检测到" : "未检测到"}</span>
           </div>
           <div className="flex min-w-0 items-center justify-end gap-1.5 whitespace-nowrap max-[420px]:gap-1">
+            <span className={statusClass}>{row.detected ? "已检测到" : "未检测到"}</span>
+            <IconActionButton
+              label={upgradeLabel}
+              disabled={working || loading || !!installingKey || !row.hint?.upgrade_command}
+              onClick={() => onLaunchUpgrade(row.key)}
+              className="shrink-0"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
+                <path d="M12 20V10" strokeLinecap="round" />
+                <path d="m8 14 4-4 4 4" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M4 5h16" strokeLinecap="round" />
+              </svg>
+            </IconActionButton>
             <input
               className={`${INLINE_NAME_INPUT_CLASS} shrink-0`}
               value={row.displayName}
@@ -330,22 +341,6 @@ function SortableCliCard({
                   <path d="M4 19h16" strokeLinecap="round" />
                 </svg>
               </IconActionButton>
-              {showMirrorInstall ? (
-                <IconActionButton
-                  label={mirrorInstallLabel}
-                  disabled={loading || working || !hint?.install_command || !!installingKey}
-                  onClick={() => onLaunchMirrorInstall(row.key)}
-                  buttonClassName={ICON_BUTTON_COMPACT_CLASS}
-                  className="shrink-0"
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-3.5 w-3.5">
-                    <path d="M5 8h11" strokeLinecap="round" />
-                    <path d="m13 5 3 3-3 3" strokeLinecap="round" strokeLinejoin="round" />
-                    <path d="M19 16H8" strokeLinecap="round" />
-                    <path d="m11 13-3 3 3 3" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </IconActionButton>
-              ) : null}
               <IconActionButton
                 label={copyLabel}
                 disabled={loading || !hint?.install_command}
@@ -422,7 +417,7 @@ export function CliConfigTable({
   onOpenInstallDocs,
   onOpenNodejsDownload,
   onLaunchInstall,
-  onLaunchMirrorInstall,
+  onLaunchUpgrade,
   onLaunchUninstall,
   onQuickSetup,
   onTerminalEnsureReady,
@@ -498,7 +493,7 @@ export function CliConfigTable({
             onOpenInstallDocs={onOpenInstallDocs}
             onOpenNodejsDownload={onOpenNodejsDownload}
             onLaunchInstall={onLaunchInstall}
-            onLaunchMirrorInstall={onLaunchMirrorInstall}
+            onLaunchUpgrade={onLaunchUpgrade}
             onLaunchUninstall={onLaunchUninstall}
             onQuickSetup={onQuickSetup}
             onTerminalEnsureReady={onTerminalEnsureReady}

@@ -373,6 +373,7 @@ pub struct CliInstallHint {
     pub key: String,
     pub display_name: String,
     pub install_command: String,
+    pub upgrade_command: Option<String>,
     pub uninstall_command: String,
     pub auth_command: Option<String>,
     pub verify_command: Option<String>,
@@ -544,6 +545,10 @@ fn normalize_config(mut config: AppConfig) -> AppConfig {
     if config.version < 4 {
         config.show_nilesoft_default_menus = false;
     }
+    config.show_nilesoft_default_menus = false;
+    config.no_exit = true;
+    config.advanced_menu_mode = false;
+    config.menu_theme_enabled = false;
     config.use_windows_terminal = matches!(config.terminal_mode, TerminalMode::Wt);
     if config.version == 0 || config.version < CONFIG_VERSION {
         config.version = CONFIG_VERSION;
