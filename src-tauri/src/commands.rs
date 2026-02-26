@@ -27,6 +27,7 @@ const ALLOWED_DOCS_DOMAINS: [&str; 7] = [
     "nodejs.org",
 ];
 const NODEJS_DOWNLOAD_URL: &str = "https://nodejs.org/zh-cn/download";
+const KIMI_TARGET_PYTHON_VERSION: &str = "3.13";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct HkcuMenuGroup {
@@ -315,6 +316,44 @@ fn resolve_uv_executable_path() -> Option<PathBuf> {
     uv_executable_candidates()
         .into_iter()
         .find(|path| path.exists())
+}
+
+fn verify_uv_python_installation(version: &str) -> Result<String, String> {
+    let refreshed_path = process_util::refreshed_path_env();
+    let mut command = if let Some(uv_path) = resolve_uv_executable_path() {
+        process_util::command_hidden(uv_path)
+    } else {
+        process_util::command_hidden("uv")
+    };
+    command.args(["python", "find", version]);
+    if let Some(path_value) = refreshed_path.as_deref() {
+        command.env("PATH", path_value);
+    }
+
+    let output = command
+        .output()
+        .map_err(|error| format!("执行 uv python find {version} 失败: {error}"))?;
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if stdout.is_empty() {
+            Ok(format!("uv python find {version} 返回成功"))
+        } else {
+            Ok(stdout)
+        }
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !stderr.is_empty() {
+            Err(stderr)
+        } else if !stdout.is_empty() {
+            Err(stdout)
+        } else {
+            Err(format!(
+                "uv python find {version} 失败，exit_code={:?}",
+                output.status.code()
+            ))
+        }
+    }
 }
 
 fn kimi_executable_candidates() -> Vec<PathBuf> {
@@ -802,6 +841,31 @@ pub fn verify_kimi_installation() -> ActionResult {
         "Kimi 复检未通过",
         "未检测到 kimi 命令或本地安装路径。",
     )
+}
+
+#[tauri::command]
+pub fn verify_kimi_python_installation() -> ActionResult {
+    if !(detect::command_exists("uv") || resolve_uv_executable_path().is_some()) {
+        return ActionResult::err(
+            "verify_python_uv_missing",
+            "Python 复检未通过",
+            "未检测到 uv 命令，请先安装 uv。",
+        );
+    }
+
+    match verify_uv_python_installation(KIMI_TARGET_PYTHON_VERSION) {
+        Ok(detail) => ActionResult {
+            ok: true,
+            code: "verify_python_detected".to_string(),
+            message: format!("Python {} 复检通过。", KIMI_TARGET_PYTHON_VERSION),
+            detail: Some(detail),
+        },
+        Err(detail) => ActionResult::err(
+            "verify_python_missing",
+            format!("Python {} 复检未通过", KIMI_TARGET_PYTHON_VERSION),
+            detail,
+        ),
+    }
 }
 
 #[tauri::command]

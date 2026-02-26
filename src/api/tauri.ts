@@ -95,6 +95,10 @@ export function verifyKimiInstallation() {
   return invokeTauri<ActionResult>("verify_kimi_installation");
 }
 
+export function verifyKimiPythonInstallation() {
+  return invokeTauri<ActionResult>("verify_kimi_python_installation");
+}
+
 export function launchCliUninstall(key: CliKey) {
   return invokeTauri<ActionResult>("launch_cli_uninstall", { key });
 }

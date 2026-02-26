@@ -22,6 +22,7 @@ import {
   requestElevationAndRegister,
   runCliVerify,
   verifyKimiInstallation,
+  verifyKimiPythonInstallation,
   terminalCloseSession,
   terminalEnsureSession,
   terminalResize,
@@ -126,7 +127,10 @@ const TOAST_TITLE_CLASS = "text-[0.92rem] font-bold leading-[1.3] text-[var(--ui
 const TOAST_DESCRIPTION_CLASS = "m-0 text-xs text-[var(--ui-muted)] data-[type=error]:text-[#8a4f45]";
 const SELECT_CLASS = `w-full appearance-none rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-2.5 pr-9 text-sm text-[var(--ui-text)] outline-none ${INSET_SMALL} transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-[#8f8072]/35 disabled:cursor-not-allowed disabled:opacity-60`;
 const QUICK_SETUP_DETECT_TIMEOUT_MS = 5 * 60 * 1000;
-const UV_TUNA_SIMPLE_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple";
+const UV_TUNA_SIMPLE_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple/";
+const UV_PYTHON_INSTALL_MIRROR_URL =
+  "https://mirrors.tuna.tsinghua.edu.cn/github-release/astral-sh/python-build-standalone/";
+const KIMI_TARGET_PYTHON_VERSION = "3.13";
 
 type InstallLaunchMode = "official" | "mirror";
 
@@ -175,29 +179,48 @@ function normalizeLockedConfig(config: AppConfig): AppConfig {
 }
 
 function buildKimiInstallCommand(useMirror: boolean) {
-  const installCommand = useMirror
-    ? `uv tool install kimi-cli -i ${UV_TUNA_SIMPLE_INDEX_URL}`
-    : "uv tool install kimi-cli";
+  return buildKimiToolInstallCommand(useMirror, true);
+}
+
+function buildKimiPythonInstallCommand(useMirror: boolean) {
+  if (!useMirror) {
+    return `uv python install ${KIMI_TARGET_PYTHON_VERSION}`;
+  }
   return [
-    "$ErrorActionPreference='Stop'",
-    "$__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
-    "if (-not $__execlink_uv_cmd) {",
-    "  Write-Host '[ExecLink] uv 未检测到，正在安装 uv...'",
-    "  Invoke-RestMethod -Uri 'https://astral.sh/uv/install.ps1' | Invoke-Expression",
-    "  $__execlink_uv_bin_dir = Join-Path $HOME '.local\\bin'",
-    "  if (Test-Path $__execlink_uv_bin_dir) {",
-    "    $env:Path = \"$__execlink_uv_bin_dir;$env:Path\"",
-    "  }",
-    "  $__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
-    "}",
-    "if (-not $__execlink_uv_cmd) {",
-    "  throw 'uv not found after installation.'",
-    "}",
-    useMirror
-      ? `Write-Host '[ExecLink] 使用清华镜像安装 Kimi CLI: ${UV_TUNA_SIMPLE_INDEX_URL}'`
-      : "Write-Host '[ExecLink] 使用官方源安装 Kimi CLI'",
-    installCommand
+    `$env:UV_PYTHON_INSTALL_MIRROR='${UV_PYTHON_INSTALL_MIRROR_URL}'`,
+    `uv python install ${KIMI_TARGET_PYTHON_VERSION}`
   ].join("\n");
+}
+
+function buildKimiCliInstallCommand(useMirror: boolean) {
+  return useMirror
+    ? `uv tool install kimi-cli --python ${KIMI_TARGET_PYTHON_VERSION} -i ${UV_TUNA_SIMPLE_INDEX_URL}`
+    : `uv tool install kimi-cli --python ${KIMI_TARGET_PYTHON_VERSION}`;
+}
+
+function buildKimiToolInstallCommand(useMirror: boolean, ensureUv: boolean) {
+  const lines = ["$ErrorActionPreference='Stop'"];
+
+  if (ensureUv) {
+    lines.push(
+      "$__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
+      "if (-not $__execlink_uv_cmd) {",
+      "  Invoke-RestMethod -Uri 'https://astral.sh/uv/install.ps1' | Invoke-Expression",
+      "  $__execlink_uv_bin_dir = Join-Path $HOME '.local\\bin'",
+      "  if (Test-Path $__execlink_uv_bin_dir) {",
+      "    $env:Path = \"$__execlink_uv_bin_dir;$env:Path\"",
+      "  }",
+      "  $__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
+      "}",
+      "if (-not $__execlink_uv_cmd) {",
+      "  throw 'uv not found after installation.'",
+      "}"
+    );
+  }
+
+  lines.push(buildKimiPythonInstallCommand(useMirror));
+  lines.push(buildKimiCliInstallCommand(useMirror));
+  return lines.join("\n");
 }
 
 function buildKimiUvBootstrapCommand() {
@@ -205,7 +228,6 @@ function buildKimiUvBootstrapCommand() {
     "$ErrorActionPreference='Stop'",
     "$__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
     "if (-not $__execlink_uv_cmd) {",
-    "  Write-Host '[ExecLink] uv 未检测到，正在安装 uv...'",
     "  Invoke-RestMethod -Uri 'https://astral.sh/uv/install.ps1' | Invoke-Expression",
     "  $__execlink_uv_bin_dir = Join-Path $HOME '.local\\bin'",
     "  if (Test-Path $__execlink_uv_bin_dir) {",
@@ -1086,6 +1108,8 @@ export function HomePage() {
           message: [
             `将启动 ${hint.display_name} 安装（${installSourceLabel}）。`,
             mirrorMode ? `\n镜像地址: ${UV_TUNA_SIMPLE_INDEX_URL}` : "",
+            mirrorMode && isKimiInstall ? `Python 安装镜像: ${UV_PYTHON_INSTALL_MIRROR_URL}` : "",
+            mirrorMode && isKimiInstall ? `Python 版本: ${KIMI_TARGET_PYTHON_VERSION}` : "",
             mirrorMode && isKimiInstall ? "将先检测 uv；如缺失将自动安装 uv，再执行 uv 安装 Kimi CLI。" : "",
             `\n命令:\n${effectiveInstallCommand}`,
             `\n来源域名: ${hint.official_domain}`,
@@ -1577,7 +1601,8 @@ export function HomePage() {
             message: [
               "请选择 Kimi CLI 安装源。",
               "确认：官方源",
-              `取消：清华镜像（${UV_TUNA_SIMPLE_INDEX_URL}）`
+              `取消：清华镜像（${UV_TUNA_SIMPLE_INDEX_URL}）`,
+              `清华源模式会设置 UV_PYTHON_INSTALL_MIRROR=${UV_PYTHON_INSTALL_MIRROR_URL} 并安装 Python ${KIMI_TARGET_PYTHON_VERSION}`
             ].join("\n"),
             confirmText: "使用官方源",
             cancelText: "使用清华源"
@@ -1585,10 +1610,102 @@ export function HomePage() {
 
           const installMode: InstallLaunchMode = useOfficialSource ? "official" : "mirror";
           const sourceLabel = installMode === "official" ? "官方源" : "清华源";
-          const kimiInstallCommand =
-            installMode === "official"
-              ? "uv tool install kimi-cli"
-              : `uv tool install kimi-cli -i ${UV_TUNA_SIMPLE_INDEX_URL}`;
+          const pythonInstallCommand = buildKimiPythonInstallCommand(installMode === "mirror");
+          const kimiInstallCommand = buildKimiCliInstallCommand(installMode === "mirror");
+
+          setQuickPhase("precheck_python", `正在检测 Python ${KIMI_TARGET_PYTHON_VERSION} 是否可用...`);
+          const initialPythonVerify = await verifyKimiPythonInstallation();
+          if (!initialPythonVerify.ok) {
+            const acceptedPythonInstall = await requestConfirm({
+              title: `确认执行 Python ${KIMI_TARGET_PYTHON_VERSION} 安装命令（${sourceLabel}）`,
+              message: [
+                `快速安装向导将执行以下命令安装 Python ${KIMI_TARGET_PYTHON_VERSION}（${sourceLabel}）：`,
+                `\n${pythonInstallCommand}`,
+                "\n以上命令将写入内置终端执行，是否继续？"
+              ].join("\n"),
+              confirmText: "继续执行",
+              cancelText: "取消"
+            });
+            if (!acceptedPythonInstall) {
+              setQuickSetup({
+                key,
+                phase: "failed",
+                running: false,
+                message: "已取消快速安装向导",
+                detail: `已取消 Python ${KIMI_TARGET_PYTHON_VERSION} 安装步骤。`
+              });
+              setLastResult({
+                ok: false,
+                code: "quick_setup_cancelled",
+                message: "已取消快速安装向导",
+                detail: `已取消 Python ${KIMI_TARGET_PYTHON_VERSION} 安装步骤。`
+              });
+              return;
+            }
+
+            setQuickPhase(
+              "install_python",
+              `正在执行 Python ${KIMI_TARGET_PYTHON_VERSION} 安装命令（${sourceLabel}）...`,
+              pythonInstallCommand
+            );
+            emitTerminalScriptPreview(`Python ${KIMI_TARGET_PYTHON_VERSION} 安装命令（${sourceLabel}）`, pythonInstallCommand);
+            const pythonInstallResult = await terminalRunScript(pythonInstallCommand);
+            if (!pythonInstallResult.ok) {
+              setQuickSetup({
+                key,
+                phase: "failed",
+                running: false,
+                message: `内置终端执行 Python ${KIMI_TARGET_PYTHON_VERSION} 安装命令失败`,
+                detail: pythonInstallResult.detail ?? null
+              });
+              setLastResult({
+                ...pythonInstallResult,
+                code: "quick_setup_python_install_failed",
+                message: "快速安装向导 Python 安装失败"
+              });
+              return;
+            }
+
+            setLastResult({
+              ok: true,
+              code: "quick_setup_python_install_started",
+              message: `已在内置终端执行 Python ${KIMI_TARGET_PYTHON_VERSION} 安装命令（${sourceLabel}）`,
+              detail: pythonInstallCommand
+            });
+
+            setQuickPhase("verify_python", `等待 Python ${KIMI_TARGET_PYTHON_VERSION} 安装检测结果...`);
+            const pythonStartedAt = Date.now();
+            let pythonDetected = false;
+            let lastPythonVerifyDetail: string | null = initialPythonVerify.detail ?? null;
+            while (Date.now() - pythonStartedAt < QUICK_SETUP_DETECT_TIMEOUT_MS) {
+              const verify = await verifyKimiPythonInstallation();
+              lastPythonVerifyDetail = verify.detail ?? null;
+              if (verify.ok) {
+                pythonDetected = true;
+                break;
+              }
+              await wait(INSTALL_RECHECK_INTERVAL_MS);
+            }
+
+            if (!pythonDetected) {
+              setQuickSetup({
+                key,
+                phase: "failed",
+                running: false,
+                message: `Python ${KIMI_TARGET_PYTHON_VERSION} 安装后复检超时`,
+                detail: lastPythonVerifyDetail ?? "请检查终端输出，确认 Python 已安装后重试。"
+              });
+              setLastResult({
+                ok: false,
+                code: "quick_setup_python_verify_failed",
+                message: "快速安装向导 Python 复检未通过",
+                detail: lastPythonVerifyDetail
+              });
+              return;
+            }
+          } else {
+            setQuickPhase("precheck_python", `已检测到 Python ${KIMI_TARGET_PYTHON_VERSION}，跳过安装步骤。`);
+          }
 
           const acceptedKimiInstall = await requestConfirm({
             title: `确认执行 Kimi 安装命令（${sourceLabel}）`,

@@ -27,6 +27,7 @@ fn main() {
             commands::launch_cli_install,
             commands::launch_cli_auth,
             commands::verify_kimi_installation,
+            commands::verify_kimi_python_installation,
             commands::run_cli_verify,
             commands::launch_cli_uninstall,
             commands::open_install_docs,
