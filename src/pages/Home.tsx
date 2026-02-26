@@ -97,7 +97,7 @@ const TERMINAL_MODE_OPTIONS: Array<{ value: AppConfig["terminal_mode"]; label: s
 ];
 
 const CLEANUP_CONFIRM_TOKEN = "CONFIRM_CLEANUP_EXECLINK";
-const APP_VERSION = "0.2.4";
+const APP_VERSION = "0.2.5";
 const GITHUB_REPO_URL = "https://github.com/endearqb/execlink";
 const INSTALL_RECHECK_INTERVAL_MS = 2000;
 const INSTALL_RECHECK_TIMEOUT_MS = 10 * 60 * 1000;
