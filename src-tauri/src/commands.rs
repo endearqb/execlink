@@ -67,7 +67,7 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
         install_command: "irm https://claude.ai/install.ps1 | iex",
         upgrade_command: Some("claude update"),
         uninstall_command: r#"Remove-Item -Path "$env:USERPROFILE\.local\bin\claude.exe" -Force -ErrorAction SilentlyContinue; Remove-Item -Path "$env:USERPROFILE\.local\share\claude" -Recurse -Force -ErrorAction SilentlyContinue"#,
-        auth_command: None,
+        auth_command: Some("claude"),
         verify_command: Some("claude --version"),
         requires_oauth: false,
         docs_url: "https://code.claude.com/docs/en/quickstart",
@@ -83,7 +83,7 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
         install_command: "npm install -g @openai/codex",
         upgrade_command: Some("npm i -g @openai/codex@latest"),
         uninstall_command: "npm uninstall -g @openai/codex",
-        auth_command: None,
+        auth_command: Some("codex login"),
         verify_command: Some("codex --version"),
         requires_oauth: false,
         docs_url: "https://developers.openai.com/codex/cli",
@@ -99,7 +99,7 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
         install_command: "npm install -g @google/gemini-cli",
         upgrade_command: Some("npm install -g @google/gemini-cli@latest"),
         uninstall_command: "npm uninstall -g @google/gemini-cli",
-        auth_command: None,
+        auth_command: Some("gemini"),
         verify_command: Some("gemini --version"),
         requires_oauth: false,
         docs_url: "https://google-gemini.github.io/gemini-cli/",
@@ -114,7 +114,7 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
         display_name: "Kimi",
         install_command: "Invoke-RestMethod https://code.kimi.com/install.ps1 | Invoke-Expression",
         upgrade_command: Some("uv tool upgrade kimi-cli --no-cache"),
-        uninstall_command: r#"$__execlink_kimi_tool_dir = Join-Path $env:APPDATA 'uv\tools\kimi-cli'; Get-Process -Name 'kimi' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; uv tool uninstall kimi-cli; if (Test-Path $__execlink_kimi_tool_dir) { Start-Sleep -Milliseconds 300; attrib -R "$__execlink_kimi_tool_dir\*" /S /D 2>$null | Out-Null; Remove-Item -Path $__execlink_kimi_tool_dir -Recurse -Force -ErrorAction SilentlyContinue }; if (Test-Path $__execlink_kimi_tool_dir) { throw 'Kimi tool directory still exists and could not be removed. Try closing all terminals and retrying as Administrator.' }"#,
+        uninstall_command: "uv tool uninstall kimi-cli",
         auth_command: Some("kimi login"),
         verify_command: Some("kimi -v"),
         requires_oauth: true,
@@ -130,7 +130,7 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
         display_name: "Kimi Web",
         install_command: "Invoke-RestMethod https://code.kimi.com/install.ps1 | Invoke-Expression",
         upgrade_command: Some("uv tool upgrade kimi-cli --no-cache"),
-        uninstall_command: r#"$__execlink_kimi_tool_dir = Join-Path $env:APPDATA 'uv\tools\kimi-cli'; Get-Process -Name 'kimi' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; uv tool uninstall kimi-cli; if (Test-Path $__execlink_kimi_tool_dir) { Start-Sleep -Milliseconds 300; attrib -R "$__execlink_kimi_tool_dir\*" /S /D 2>$null | Out-Null; Remove-Item -Path $__execlink_kimi_tool_dir -Recurse -Force -ErrorAction SilentlyContinue }; if (Test-Path $__execlink_kimi_tool_dir) { throw 'Kimi tool directory still exists and could not be removed. Try closing all terminals and retrying as Administrator.' }"#,
+        uninstall_command: "uv tool uninstall kimi-cli",
         auth_command: Some("kimi login"),
         verify_command: Some("kimi -v"),
         requires_oauth: true,
@@ -147,7 +147,7 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
         install_command: "npm install -g @qwen-code/qwen-code@latest",
         upgrade_command: Some("npm install -g @qwen-code/qwen-code@latest"),
         uninstall_command: "npm uninstall -g @qwen-code/qwen-code",
-        auth_command: None,
+        auth_command: Some("qwen"),
         verify_command: Some("qwen --version"),
         requires_oauth: false,
         docs_url: "https://qwenlm.github.io/qwen-code-docs/getting-started/quickstart.html",
@@ -163,7 +163,7 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
         install_command: "npm install -g opencode-ai",
         upgrade_command: Some("opencode upgrade"),
         uninstall_command: "npm uninstall -g opencode-ai --no-progress",
-        auth_command: None,
+        auth_command: Some("opencode auth login"),
         verify_command: Some("opencode --version"),
         requires_oauth: false,
         docs_url: "https://opencode.ai/docs/cli/",
@@ -753,21 +753,31 @@ pub fn launch_cli_auth(key: String) -> ActionResult {
         );
     };
 
-    let script = format!(
-        "$ErrorActionPreference='Continue'; {auth_command}; Write-Host ''; Write-Host '授权命令已执行，请按提示完成登录。'"
-    );
-    let config = state::load_app_config();
-    let launch_plan = terminal::build_launch_plan(&config);
-    let launch = launch_plan.build_install_command(&script);
+    let executable = if detect::command_exists("pwsh") {
+        "pwsh.exe"
+    } else {
+        "powershell.exe"
+    };
+    let args = vec![
+        "-NoExit".to_string(),
+        "-ExecutionPolicy".to_string(),
+        "Bypass".to_string(),
+        "-Command".to_string(),
+        auth_command.to_string(),
+    ];
 
-    match launch_visible_install_terminal(&launch) {
+    match Command::new(executable).args(&args).spawn() {
         Ok(_) => ActionResult {
             ok: true,
             code: "auth_launch_started".to_string(),
             message: format!("已启动 {} 授权终端，请完成登录后返回应用。", profile.display_name),
-            detail: Some(auth_command.to_string()),
+            detail: Some(format!(
+                "{} {}",
+                executable,
+                args.join(" ")
+            )),
         },
-        Err(error) => ActionResult::err("auth_launch_failed", "启动授权失败", error),
+        Err(error) => ActionResult::err("auth_launch_failed", "启动授权失败", error.to_string()),
     }
 }
 

@@ -13,6 +13,7 @@ import {
   getInitialState,
   getInstallPrereqStatus,
   listContextMenuGroupsHkcu,
+  launchCliAuth,
   openNodejsDownloadPage,
   openInstallDocs,
   refreshExplorer,
@@ -29,6 +30,7 @@ import {
 import { CliConfigTable } from "../components/CliConfigTable";
 import { AppConfirmDialog } from "../components/AppConfirmDialog";
 import { QuickSetupWizard } from "../components/QuickSetupWizard";
+import { UsageGuideDialog } from "../components/UsageGuideDialog";
 import { ToggleRow } from "../components/ToggleRow";
 import appLogo from "../assets/excelink_logo.png";
 import {
@@ -94,7 +96,7 @@ const TERMINAL_MODE_OPTIONS: Array<{ value: AppConfig["terminal_mode"]; label: s
 ];
 
 const CLEANUP_CONFIRM_TOKEN = "CONFIRM_CLEANUP_EXECLINK";
-const APP_VERSION = "0.2.3";
+const APP_VERSION = "0.2.4";
 const GITHUB_REPO_URL = "https://github.com/endearqb/execlink";
 const INSTALL_RECHECK_INTERVAL_MS = 2000;
 const INSTALL_RECHECK_TIMEOUT_MS = 10 * 60 * 1000;
@@ -257,6 +259,7 @@ export function HomePage() {
   const [selectedHkcuGroupKeys, setSelectedHkcuGroupKeys] = useState<string[]>([]);
   const [loadingHkcuGroups, setLoadingHkcuGroups] = useState(false);
   const [windowBusy, setWindowBusy] = useState(false);
+  const [usageGuideOpen, setUsageGuideOpen] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>({
     open: false,
     title: "",
@@ -1188,23 +1191,30 @@ export function HomePage() {
 
   const onLaunchInstall = useCallback(
     async (key: CliKey) => {
-      if (isKimiMirrorInstallKey(key)) {
-        const useMirror = await requestConfirm({
-          title: "选择 Kimi 安装源",
-          message: [
-            "是否使用清华镜像源安装 Kimi CLI？",
-            `镜像地址：${UV_TUNA_SIMPLE_INDEX_URL}`,
-            "\n若选择官方源，将从官方源安装。"
-          ].join("\n"),
-          confirmText: "使用清华源",
-          cancelText: "使用官方源"
-        });
-        await launchInstall(key, { mode: useMirror ? "mirror" : "official" });
-        return;
-      }
       await launchInstall(key, { mode: "official" });
     },
-    [launchInstall, requestConfirm]
+    [launchInstall]
+  );
+
+  const onLaunchAuth = useCallback(
+    async (key: CliKey) => {
+      const hint = installHints[key];
+      const displayName = hint?.display_name ?? CLI_DEFAULT_TITLES[key];
+      const result = await runAction(() => launchCliAuth(key));
+      if (!result.ok) {
+        return;
+      }
+      setLastResult({
+        ok: true,
+        code: result.code,
+        message:
+          result.code === "auth_not_required"
+            ? `${displayName} 无需额外登录步骤`
+            : `已启动 ${displayName} 登录流程`,
+        detail: result.detail ?? hint?.auth_command ?? null
+      });
+    },
+    [installHints, runAction]
   );
 
   const onLaunchUpgrade = useCallback(
@@ -1448,7 +1458,7 @@ export function HomePage() {
           return;
         }
 
-        if (hint.risk_remote_script) {
+        if (hint.risk_remote_script && !isKimiMirrorInstallKey(key)) {
           const acceptedRisk = await requestConfirm({
             title: "高风险安装命令确认",
             message: [
@@ -1481,9 +1491,36 @@ export function HomePage() {
         if (isKimiMirrorInstallKey(key)) {
           let uvReady = prereq.uv;
           if (!uvReady) {
-            setQuickPhase("precheck_uv", "未检测到 uv，准备安装 uv...");
             const uvBootstrapCommand = buildKimiUvBootstrapCommand();
-            setQuickPhase("install_uv", "正在安装 uv...");
+            const acceptedUvInstall = await requestConfirm({
+              title: "确认执行 uv 安装命令",
+              message: [
+                "未检测到 uv，快速安装向导将执行以下命令安装并复检：",
+                `\n${uvBootstrapCommand}`,
+                "\n以上命令将写入内置终端执行，是否继续？"
+              ].join("\n"),
+              confirmText: "继续执行",
+              cancelText: "取消",
+              danger: true
+            });
+            if (!acceptedUvInstall) {
+              setQuickSetup({
+                key,
+                phase: "failed",
+                running: false,
+                message: "已取消快速安装向导",
+                detail: "已取消 uv 安装步骤。"
+              });
+              setLastResult({
+                ok: false,
+                code: "quick_setup_cancelled",
+                message: "已取消快速安装向导",
+                detail: "已取消 uv 安装步骤。"
+              });
+              return;
+            }
+            setQuickPhase("precheck_uv", "未检测到 uv，准备安装 uv...");
+            setQuickPhase("install_uv", "正在安装 uv...", uvBootstrapCommand);
             emitTerminalScriptPreview("Kimi 前置：安装 uv", uvBootstrapCommand);
             const uvScriptResult = await terminalRunScript(uvBootstrapCommand);
             if (!uvScriptResult.ok) {
@@ -1553,7 +1590,34 @@ export function HomePage() {
               ? "uv tool install kimi-cli"
               : `uv tool install kimi-cli -i ${UV_TUNA_SIMPLE_INDEX_URL}`;
 
-          setQuickPhase("install_kimi", `正在执行 Kimi 安装命令（${sourceLabel}）...`);
+          const acceptedKimiInstall = await requestConfirm({
+            title: `确认执行 Kimi 安装命令（${sourceLabel}）`,
+            message: [
+              `快速安装向导将执行以下命令安装 Kimi CLI（${sourceLabel}）：`,
+              `\n${kimiInstallCommand}`,
+              "\n以上命令将写入内置终端执行，是否继续？"
+            ].join("\n"),
+            confirmText: "继续执行",
+            cancelText: "取消"
+          });
+          if (!acceptedKimiInstall) {
+            setQuickSetup({
+              key,
+              phase: "failed",
+              running: false,
+              message: "已取消快速安装向导",
+              detail: "已取消 Kimi 安装步骤。"
+            });
+            setLastResult({
+              ok: false,
+              code: "quick_setup_cancelled",
+              message: "已取消快速安装向导",
+              detail: "已取消 Kimi 安装步骤。"
+            });
+            return;
+          }
+
+          setQuickPhase("install_kimi", `正在执行 Kimi 安装命令（${sourceLabel}）...`, kimiInstallCommand);
           emitTerminalScriptPreview(`Kimi 安装命令（${sourceLabel}）`, kimiInstallCommand);
           const kimiInstallResult = await terminalRunScript(kimiInstallCommand);
           if (!kimiInstallResult.ok) {
@@ -1638,8 +1702,7 @@ export function HomePage() {
 
           if (hint.requires_oauth && hint.auth_command) {
             setQuickPhase("auth", "正在触发 Kimi 授权登录...");
-            emitTerminalScriptPreview(`${hint.display_name} 授权命令`, hint.auth_command);
-            const authResult = await terminalRunScript(hint.auth_command);
+            const authResult = await launchCliAuth(key);
 
             if (authResult.ok) {
               setLastResult({
@@ -1725,8 +1788,7 @@ export function HomePage() {
 
         if (hint.requires_oauth && hint.auth_command) {
           setQuickPhase("auth", "正在启动授权步骤...");
-          emitTerminalScriptPreview(`${hint.display_name} 授权命令`, hint.auth_command);
-          const authResult = await terminalRunScript(hint.auth_command);
+          const authResult = await launchCliAuth(key);
           if (!authResult.ok) {
             setQuickSetup({
               key,
@@ -2158,6 +2220,15 @@ export function HomePage() {
               type="button"
               className={HEADER_WINDOW_BUTTON_CLASS}
               onMouseDown={(event) => event.stopPropagation()}
+              onClick={() => setUsageGuideOpen(true)}
+              aria-label="打开使用说明向导"
+            >
+              <span className="text-[11px] font-bold leading-none">?</span>
+            </button>
+            <button
+              type="button"
+              className={HEADER_WINDOW_BUTTON_CLASS}
+              onMouseDown={(event) => event.stopPropagation()}
               onClick={() => void runWindowAction((win) => win.minimize())}
               disabled={!tauriWindow || windowBusy}
               aria-label="最小化窗口"
@@ -2261,6 +2332,7 @@ export function HomePage() {
                 onOpenInstallDocs={onOpenInstallDocs}
                 onOpenNodejsDownload={onOpenNodejsDownload}
                 onLaunchInstall={onLaunchInstall}
+                onLaunchAuth={onLaunchAuth}
                 onLaunchUpgrade={onLaunchUpgrade}
                 onLaunchUninstall={onLaunchUninstall}
                 onQuickSetup={onQuickSetup}
@@ -2457,6 +2529,8 @@ export function HomePage() {
         onConfirm={() => settleConfirmDialog(true)}
         onCancel={() => settleConfirmDialog(false)}
       />
+
+      <UsageGuideDialog open={usageGuideOpen} onClose={() => setUsageGuideOpen(false)} />
 
       <Toast.Portal>
         <Toast.Viewport className="pointer-events-none fixed right-3.5 bottom-14 z-[1200] grid w-[min(380px,calc(100vw-28px))] gap-2 max-[420px]:bottom-12">

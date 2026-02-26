@@ -80,6 +80,7 @@ interface CliConfigTableProps {
   onOpenInstallDocs: (key: CliKey) => void | Promise<void>;
   onOpenNodejsDownload: () => void | Promise<void>;
   onLaunchInstall: (key: CliKey) => void | Promise<void>;
+  onLaunchAuth: (key: CliKey) => void | Promise<void>;
   onLaunchUpgrade: (key: CliKey) => void | Promise<void>;
   onLaunchUninstall: (key: CliKey) => void | Promise<void>;
   onQuickSetup: (key: CliKey) => void | Promise<void>;
@@ -104,6 +105,7 @@ interface SortableCliCardProps {
   onOpenInstallDocs: (key: CliKey) => void | Promise<void>;
   onOpenNodejsDownload: () => void | Promise<void>;
   onLaunchInstall: (key: CliKey) => void | Promise<void>;
+  onLaunchAuth: (key: CliKey) => void | Promise<void>;
   onLaunchUpgrade: (key: CliKey) => void | Promise<void>;
   onLaunchUninstall: (key: CliKey) => void | Promise<void>;
   onQuickSetup: (key: CliKey) => void | Promise<void>;
@@ -161,6 +163,7 @@ function SortableCliCard({
   onOpenInstallDocs,
   onOpenNodejsDownload,
   onLaunchInstall,
+  onLaunchAuth,
   onLaunchUpgrade,
   onLaunchUninstall,
   onQuickSetup,
@@ -206,6 +209,7 @@ function SortableCliCard({
   const nodeTagClass = `rounded-[var(--radius-pill)] border border-[#ddd5c9] bg-[#e8e1d6] px-2.5 py-0.5 text-[10px] text-[#5f564d] ${OUTSET_SMALL}`;
   const quickSetupLabel = "快速安装向导";
   const installOnlyLabel = installingKey === row.key ? "安装中..." : "仅执行安装";
+  const authLabel = `登录 ${row.title}`;
   const upgradeLabel = `升级 ${row.title}`;
   const uninstallLabel = `卸载 ${row.title}`;
   const copyLabel = `复制 ${row.title} 安装命令`;
@@ -244,6 +248,17 @@ function SortableCliCard({
                 onMouseDown={(event) => event.stopPropagation()}
               >
                 <IconActionButton
+                  label={authLabel}
+                  disabled={working || loading || !!installingKey || !row.hint}
+                  onClick={() => onLaunchAuth(row.key)}
+                  className="shrink-0"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
+                    <path d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Z" />
+                    <path d="M4 20a8 8 0 0 1 16 0" strokeLinecap="round" />
+                  </svg>
+                </IconActionButton>
+                <IconActionButton
                   label={upgradeLabel}
                   disabled={working || loading || !!installingKey || !row.hint?.upgrade_command}
                   onClick={() => onLaunchUpgrade(row.key)}
@@ -272,13 +287,20 @@ function SortableCliCard({
             </span>
           </div>
           <div className="flex min-w-0 items-center justify-end gap-1.5 whitespace-nowrap max-[420px]:gap-1">
-            <input
-              className={`${INLINE_NAME_INPUT_CLASS} shrink-0`}
-              value={row.displayName}
-              onChange={(event) => onSetDisplayName(row.key, event.target.value)}
-              disabled={working || loading}
-              aria-label={`${row.title} 自定义名称`}
-            />
+            <label className="group/cli-display-name relative block shrink-0">
+              <input
+                className={`${INLINE_NAME_INPUT_CLASS} shrink-0`}
+                value={row.displayName}
+                onChange={(event) => onSetDisplayName(row.key, event.target.value)}
+                disabled={working || loading}
+                aria-label={`${row.title} 自定义名称`}
+              />
+              <span
+                className={`pointer-events-none absolute top-[calc(100%+8px)] right-0 z-10 translate-y-0.5 whitespace-nowrap rounded-[var(--radius-pill)] bg-[var(--ui-base)] px-2.5 py-[5px] text-[11px] text-[var(--ui-muted)] opacity-0 transition-[opacity,transform] duration-150 ${OUTSET_SMALL} group-hover/cli-display-name:translate-y-0 group-hover/cli-display-name:opacity-100 group-focus-within/cli-display-name:translate-y-0 group-focus-within/cli-display-name:opacity-100`}
+              >
+                自定义菜单显示名称
+              </span>
+            </label>
             <Switch.Root
               className={`${SWITCH_ROOT_CLASS} shrink-0`}
               checked={row.enabled}
@@ -425,6 +447,7 @@ export function CliConfigTable({
   onOpenInstallDocs,
   onOpenNodejsDownload,
   onLaunchInstall,
+  onLaunchAuth,
   onLaunchUpgrade,
   onLaunchUninstall,
   onQuickSetup,
@@ -501,6 +524,7 @@ export function CliConfigTable({
             onOpenInstallDocs={onOpenInstallDocs}
             onOpenNodejsDownload={onOpenNodejsDownload}
             onLaunchInstall={onLaunchInstall}
+            onLaunchAuth={onLaunchAuth}
             onLaunchUpgrade={onLaunchUpgrade}
             onLaunchUninstall={onLaunchUninstall}
             onQuickSetup={onQuickSetup}
