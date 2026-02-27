@@ -111,6 +111,14 @@ export function openNodejsDownloadPage() {
   return invokeTauri<ActionResult>("open_nodejs_download_page");
 }
 
+export function launchGitInstall() {
+  return invokeTauri<ActionResult>("launch_git_install");
+}
+
+export function launchNodejsInstall() {
+  return invokeTauri<ActionResult>("launch_nodejs_install");
+}
+
 export function terminalEnsureSession() {
   return invokeTauri<ActionResult>("terminal_ensure_session");
 }

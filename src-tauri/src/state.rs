@@ -388,6 +388,7 @@ pub struct CliInstallHint {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InstallPrereqStatus {
+    pub git: bool,
     pub node: bool,
     pub npm: bool,
     pub uv: bool,

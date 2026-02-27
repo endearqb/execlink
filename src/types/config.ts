@@ -166,6 +166,7 @@ export interface CliInstallHint {
 export type CliInstallHintMap = Record<string, CliInstallHint>;
 
 export interface InstallPrereqStatus {
+  git: boolean;
   node: boolean;
   npm: boolean;
   uv: boolean;

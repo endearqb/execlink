@@ -14,6 +14,8 @@ import {
   getInstallPrereqStatus,
   listContextMenuGroupsHkcu,
   launchCliAuth,
+  launchGitInstall,
+  launchNodejsInstall,
   openNodejsDownloadPage,
   openInstallDocs,
   refreshExplorer,
@@ -74,6 +76,7 @@ const EMPTY_INSTALL: InstallStatus = {
 };
 
 const EMPTY_PREREQ: InstallPrereqStatus = {
+  git: false,
   node: false,
   npm: false,
   uv: false,
@@ -1064,6 +1067,14 @@ export function HomePage() {
     });
   }, [runAction]);
 
+  const onLaunchGitPrereqInstall = useCallback(async () => {
+    await runAction(launchGitInstall);
+  }, [runAction]);
+
+  const onLaunchNodejsPrereqInstall = useCallback(async () => {
+    await runAction(launchNodejsInstall);
+  }, [runAction]);
+
   const launchInstall = useCallback(
     async (key: CliKey, options?: InstallLaunchOptions) => {
       const mode = options?.mode ?? "official";
@@ -1090,6 +1101,7 @@ export function HomePage() {
       }
 
       const precheckLines = [
+        `Git: ${installPrereq.git ? "✅" : "❌"}`,
         `Node.js: ${installPrereq.node ? "✅" : "❌"}`,
         `npm: ${installPrereq.npm ? "✅" : "❌"}`,
         `uv: ${installPrereq.uv ? "✅" : "❌"}`,
@@ -1200,6 +1212,7 @@ export function HomePage() {
       clearTerminalAutoCloseTimer,
       emitTerminalScriptPreview,
       installHints,
+      installPrereq.git,
       installPrereq.node,
       installPrereq.npm,
       installPrereq.uv,
@@ -2369,6 +2382,24 @@ export function HomePage() {
             <button className={HEADER_ACTION_BUTTON_CLASS} onClick={onDetect} disabled={working || loading}>
               刷新 CLI 检测
             </button>
+            {!installPrereq.git ? (
+              <button
+                className={HEADER_ACTION_BUTTON_CLASS}
+                onClick={onLaunchGitPrereqInstall}
+                disabled={working || loading}
+              >
+                安装 Git
+              </button>
+            ) : null}
+            {!installPrereq.node ? (
+              <button
+                className={HEADER_ACTION_BUTTON_CLASS}
+                onClick={onLaunchNodejsPrereqInstall}
+                disabled={working || loading}
+              >
+                安装 Node.js
+              </button>
+            ) : null}
             {canOperate ? (
               <button className={HEADER_ACTION_BUTTON_CLASS} onClick={onApply} disabled={working || loading}>
                 应用配置

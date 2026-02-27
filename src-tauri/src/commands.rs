@@ -27,6 +27,8 @@ const ALLOWED_DOCS_DOMAINS: [&str; 7] = [
     "nodejs.org",
 ];
 const NODEJS_DOWNLOAD_URL: &str = "https://nodejs.org/zh-cn/download";
+const GIT_WINGET_INSTALL_COMMAND: &str = "winget install --id Git.Git -e --source winget";
+const NODEJS_WINGET_INSTALL_COMMAND: &str = "winget install OpenJS.NodeJS";
 const KIMI_TARGET_PYTHON_VERSION: &str = "3.13";
 
 #[derive(Debug, Clone, Serialize)]
@@ -287,6 +289,14 @@ fn open_url_in_system_browser(url: &str) -> Result<(), String> {
         .spawn()
         .map_err(|error| format!("拉起系统浏览器失败: {error}"))?;
     Ok(())
+}
+
+fn launch_elevated_powershell_install(command: &str) -> Result<String, String> {
+    let escaped_command = command.replace('\'', "''");
+    let script = format!(
+        "$ErrorActionPreference='Stop'; $cmd='{escaped_command}'; $args=@('-NoExit','-ExecutionPolicy','Bypass','-Command',$cmd); $p=Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Verb RunAs -PassThru -ErrorAction Stop; if ($null -eq $p) {{ throw '管理员终端启动失败' }}; Write-Output \"pid=$($p.Id)\""
+    );
+    run_powershell_script(&script)
 }
 
 fn escape_ps_single_quoted(value: &str) -> String {
@@ -698,12 +708,79 @@ pub fn get_install_prereq_status() -> InstallPrereqStatus {
     let refreshed_path = process_util::refreshed_path_env();
     let path_ref = refreshed_path.as_deref();
     InstallPrereqStatus {
+        git: detect::command_exists_with_path("git", path_ref),
         node: detect::command_exists_with_path("node", path_ref),
         npm: detect::command_exists_with_path("npm", path_ref),
         uv: detect::command_exists_with_path("uv", path_ref) || resolve_uv_executable_path().is_some(),
         pwsh: detect::command_exists_with_path("pwsh", path_ref),
         winget: detect::command_exists_with_path("winget", path_ref),
         wsl: detect::command_exists_with_path("wsl", path_ref),
+    }
+}
+
+#[tauri::command]
+pub fn launch_git_install() -> ActionResult {
+    let prereq = get_install_prereq_status();
+    if prereq.git {
+        return ActionResult::ok_with_code("git_already_installed", "已检测到 Git，无需安装。");
+    }
+    if !prereq.winget {
+        return ActionResult::err(
+            "winget_missing",
+            "启动 Git 安装失败",
+            "未检测到 winget，请先安装 App Installer 后重试。",
+        );
+    }
+
+    match launch_elevated_powershell_install(GIT_WINGET_INSTALL_COMMAND) {
+        Ok(output) => {
+            logging::log_line(&format!(
+                "[prereq-install] git install terminal started command={} output={}",
+                GIT_WINGET_INSTALL_COMMAND, output
+            ));
+            ActionResult {
+                ok: true,
+                code: "git_install_launch_started".to_string(),
+                message: "已启动 Git 管理员安装终端，完成后请点击“刷新 CLI 检测”。".to_string(),
+                detail: Some(format!("{}; {}", GIT_WINGET_INSTALL_COMMAND, output)),
+            }
+        }
+        Err(error) => ActionResult::err("git_install_launch_failed", "启动 Git 安装失败", error),
+    }
+}
+
+#[tauri::command]
+pub fn launch_nodejs_install() -> ActionResult {
+    let prereq = get_install_prereq_status();
+    if prereq.node {
+        return ActionResult::ok_with_code("nodejs_already_installed", "已检测到 Node.js，无需安装。");
+    }
+    if !prereq.winget {
+        return ActionResult::err(
+            "winget_missing",
+            "启动 Node.js 安装失败",
+            "未检测到 winget，请先安装 App Installer 后重试。",
+        );
+    }
+
+    match launch_elevated_powershell_install(NODEJS_WINGET_INSTALL_COMMAND) {
+        Ok(output) => {
+            logging::log_line(&format!(
+                "[prereq-install] nodejs install terminal started command={} output={}",
+                NODEJS_WINGET_INSTALL_COMMAND, output
+            ));
+            ActionResult {
+                ok: true,
+                code: "nodejs_install_launch_started".to_string(),
+                message: "已启动 Node.js 管理员安装终端，完成后请点击“刷新 CLI 检测”。".to_string(),
+                detail: Some(format!("{}; {}", NODEJS_WINGET_INSTALL_COMMAND, output)),
+            }
+        }
+        Err(error) => ActionResult::err(
+            "nodejs_install_launch_failed",
+            "启动 Node.js 安装失败",
+            error,
+        ),
     }
 }
 
