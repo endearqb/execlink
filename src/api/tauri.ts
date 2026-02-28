@@ -5,6 +5,7 @@ import type {
   CliInstallHintMap,
   CliStatusMap,
   DiagnosticsInfo,
+  GitInstallSource,
   CliKey,
   HkcuMenuGroup,
   InstallLaunchRequest,
@@ -117,6 +118,10 @@ export function launchGitInstall() {
 
 export function launchNodejsInstall() {
   return invokeTauri<ActionResult>("launch_nodejs_install");
+}
+
+export function launchPrereqInstall(gitSource?: GitInstallSource) {
+  return invokeTauri<ActionResult>("launch_prereq_install", { gitSource });
 }
 
 export function terminalEnsureSession() {

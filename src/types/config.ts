@@ -175,6 +175,8 @@ export interface InstallPrereqStatus {
   wsl: boolean;
 }
 
+export type GitInstallSource = "official" | "tuna";
+
 export interface InstallLaunchRequest {
   key: CliKey;
   confirmed_remote_script: boolean;

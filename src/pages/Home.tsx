@@ -14,8 +14,7 @@ import {
   getInstallPrereqStatus,
   listContextMenuGroupsHkcu,
   launchCliAuth,
-  launchGitInstall,
-  launchNodejsInstall,
+  launchPrereqInstall,
   openNodejsDownloadPage,
   openInstallDocs,
   refreshExplorer,
@@ -32,6 +31,7 @@ import {
 } from "../api/tauri";
 import { CliConfigTable } from "../components/CliConfigTable";
 import { AppConfirmDialog } from "../components/AppConfirmDialog";
+import { GitInstallSourceDialog } from "../components/GitInstallSourceDialog";
 import { QuickSetupWizard } from "../components/QuickSetupWizard";
 import { UsageGuideDialog } from "../components/UsageGuideDialog";
 import { ToggleRow } from "../components/ToggleRow";
@@ -46,6 +46,7 @@ import {
   type CliInstallHintMap,
   type CliKey,
   type CliStatusMap,
+  type GitInstallSource,
   type HkcuMenuGroup,
   type InstallPrereqStatus,
   type InstallStatus,
@@ -100,7 +101,7 @@ const TERMINAL_MODE_OPTIONS: Array<{ value: AppConfig["terminal_mode"]; label: s
 ];
 
 const CLEANUP_CONFIRM_TOKEN = "CONFIRM_CLEANUP_EXECLINK";
-const APP_VERSION = "0.2.5";
+const APP_VERSION = __APP_VERSION__;
 const GITHUB_REPO_URL = "https://github.com/endearqb/execlink";
 const INSTALL_RECHECK_INTERVAL_MS = 2000;
 const INSTALL_RECHECK_TIMEOUT_MS = 10 * 60 * 1000;
@@ -131,9 +132,18 @@ const TOAST_DESCRIPTION_CLASS = "m-0 text-xs text-[var(--ui-muted)] data-[type=e
 const SELECT_CLASS = `w-full appearance-none rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-2.5 pr-9 text-sm text-[var(--ui-text)] outline-none ${INSET_SMALL} transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-[#8f8072]/35 disabled:cursor-not-allowed disabled:opacity-60`;
 const QUICK_SETUP_DETECT_TIMEOUT_MS = 5 * 60 * 1000;
 const UV_TUNA_SIMPLE_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple/";
-const UV_PYTHON_INSTALL_MIRROR_URL =
-  "https://mirrors.tuna.tsinghua.edu.cn/github-release/astral-sh/python-build-standalone/";
+const UV_ALIYUN_SIMPLE_INDEX_URL = "https://mirrors.aliyun.com/pypi/simple/";
 const KIMI_TARGET_PYTHON_VERSION = "3.13";
+const KIMI_TARGET_PYTHON_PATCH_VERSION = "3.13.12";
+const KIMI_TARGET_PYTHON_USER_EXE = "Programs\\Python\\Python313\\python.exe";
+const KIMI_PYTHON_INSTALLER_FILENAME = `python-${KIMI_TARGET_PYTHON_PATCH_VERSION}-amd64.exe`;
+const KIMI_PYTHON_INSTALLER_TEMP_FILENAME = `execlink-${KIMI_PYTHON_INSTALLER_FILENAME}`;
+const KIMI_TUNA_PYTHON_INSTALLER_URL = `https://mirrors.tuna.tsinghua.edu.cn/python/${KIMI_TARGET_PYTHON_PATCH_VERSION}/${KIMI_PYTHON_INSTALLER_FILENAME}`;
+const KIMI_ALIYUN_PYTHON_INSTALLER_URL = `https://mirrors.aliyun.com/python-release/windows/${KIMI_PYTHON_INSTALLER_FILENAME}`;
+const MIRROR_PROBE_CONNECT_TIMEOUT_SEC = 3;
+const MIRROR_PROBE_MAX_TIME_SEC = 8;
+const MIRROR_PROBE_TIMEOUT_MS = 20 * 1000;
+const PYTHON_RUNTIME_CHECK_TIMEOUT_MS = 15 * 1000;
 
 type InstallLaunchMode = "official" | "mirror";
 
@@ -186,13 +196,10 @@ function buildKimiInstallCommand(useMirror: boolean) {
 }
 
 function buildKimiPythonInstallCommand(useMirror: boolean) {
-  if (!useMirror) {
+  if (useMirror) {
     return `uv python install ${KIMI_TARGET_PYTHON_VERSION}`;
   }
-  return [
-    `$env:UV_PYTHON_INSTALL_MIRROR='${UV_PYTHON_INSTALL_MIRROR_URL}'`,
-    `uv python install ${KIMI_TARGET_PYTHON_VERSION}`
-  ].join("\n");
+  return `uv python install ${KIMI_TARGET_PYTHON_VERSION}`;
 }
 
 function buildKimiCliInstallCommand(useMirror: boolean) {
@@ -201,24 +208,120 @@ function buildKimiCliInstallCommand(useMirror: boolean) {
     : `uv tool install kimi-cli --python ${KIMI_TARGET_PYTHON_VERSION}`;
 }
 
+function escapePsSingleQuoted(value: string) {
+  return value.replace(/'/g, "''");
+}
+
+function buildKimiPythonRuntimeCheckCommand() {
+  const escapedUserPythonPath = escapePsSingleQuoted(KIMI_TARGET_PYTHON_USER_EXE);
+  return [
+    `$__execlink_user_python = Join-Path $env:LocalAppData '${escapedUserPythonPath}'`,
+    "if (Test-Path $__execlink_user_python) { & $__execlink_user_python --version; if ($LASTEXITCODE -eq 0) { return } }",
+    "$__execlink_py_launcher = Get-Command py -ErrorAction SilentlyContinue",
+    `if ($__execlink_py_launcher) { & py -${KIMI_TARGET_PYTHON_VERSION} --version; if ($LASTEXITCODE -eq 0) { return } }`,
+    `throw 'python ${KIMI_TARGET_PYTHON_VERSION} runtime not found'`
+  ].join("; ");
+}
+
+function buildKimiPythonInstallerTempPathPrefix() {
+  const escapedTempFile = escapePsSingleQuoted(KIMI_PYTHON_INSTALLER_TEMP_FILENAME);
+  return `$__execlink_python_installer = Join-Path $env:TEMP '${escapedTempFile}'`;
+}
+
+function buildUrlProbeCommand(url: string) {
+  const escaped = escapePsSingleQuoted(url);
+  return [
+    `$__execlink_probe_url='${escaped}'`,
+    `$__execlink_probe_code = & curl.exe -I -L --connect-timeout ${MIRROR_PROBE_CONNECT_TIMEOUT_SEC} --max-time ${MIRROR_PROBE_MAX_TIME_SEC} -sS -o NUL -w '%{http_code}' "$__execlink_probe_url"`,
+    "if ($LASTEXITCODE -ne 0) { throw ('curl_exit_code=' + $LASTEXITCODE) }",
+    "if (-not ($__execlink_probe_code -match '^\\d{3}$')) { throw ('http_status=' + $__execlink_probe_code) }",
+    "if ([int]$__execlink_probe_code -ge 400) { throw ('http_status=' + $__execlink_probe_code) }"
+  ].join("; ");
+}
+
+function buildKimiMirrorPythonInstallSteps(mirrorUrl: string) {
+  const escaped = escapePsSingleQuoted(mirrorUrl);
+  const tempPathPrefix = buildKimiPythonInstallerTempPathPrefix();
+  const runtimeCheckCommand = buildKimiPythonRuntimeCheckCommand();
+  return [
+    [
+      tempPathPrefix,
+      `$__execlink_python_installer_url='${escaped}'`,
+      "Invoke-WebRequest -Uri $__execlink_python_installer_url -OutFile $__execlink_python_installer -TimeoutSec 30 -MaximumRedirection 3 -ErrorAction Stop"
+    ].join("; "),
+    [
+      tempPathPrefix,
+      "if (-not (Test-Path $__execlink_python_installer)) { throw 'python installer file missing after download' }",
+      "$__execlink_installer_proc = Start-Process -FilePath $__execlink_python_installer -ArgumentList @('/quiet','InstallAllUsers=0','PrependPath=1','Include_pip=1','Include_test=0') -Wait -PassThru",
+      "if ($null -eq $__execlink_installer_proc) { throw 'python installer process unavailable' }",
+      "if ($__execlink_installer_proc.ExitCode -ne 0) { throw ('python installer exit_code=' + $__execlink_installer_proc.ExitCode) }"
+    ].join("; "),
+    runtimeCheckCommand,
+    `${tempPathPrefix}; if (Test-Path $__execlink_python_installer) { Remove-Item $__execlink_python_installer -Force -ErrorAction SilentlyContinue }`
+  ];
+}
+
+function buildKimiMirrorCliInstallSteps(indexUrl: string) {
+  const escaped = escapePsSingleQuoted(indexUrl);
+  const escapedUserPythonPath = escapePsSingleQuoted(KIMI_TARGET_PYTHON_USER_EXE);
+  return [
+    [
+      `$__execlink_user_python = Join-Path $env:LocalAppData '${escapedUserPythonPath}'`,
+      `$__execlink_kimi_python = if (Test-Path $__execlink_user_python) { $__execlink_user_python } else { '${KIMI_TARGET_PYTHON_VERSION}' }`,
+      `uv tool install kimi-cli --python "$__execlink_kimi_python" -i '${escaped}'`
+    ].join("; ")
+  ];
+}
+
+function buildKimiMirrorPythonInstallPlanPreview() {
+  return [
+    `步骤 1: 探测镜像可用性（curl，connect ${MIRROR_PROBE_CONNECT_TIMEOUT_SEC} 秒，max ${MIRROR_PROBE_MAX_TIME_SEC} 秒）`,
+    `  - ${KIMI_TUNA_PYTHON_INSTALLER_URL}`,
+    `  - ${KIMI_ALIYUN_PYTHON_INSTALLER_URL}`,
+    "步骤 2: 对可用镜像逐个执行以下步骤：",
+    `  - 下载安装器到 %TEMP%\\${KIMI_PYTHON_INSTALLER_TEMP_FILENAME}`,
+    "  - 静默安装：Start-Process <installer> /quiet InstallAllUsers=0 PrependPath=1",
+    `  - 快速校验：Python ${KIMI_TARGET_PYTHON_VERSION} 运行时`,
+    "  - 清理临时安装器",
+    "步骤 3: 全部镜像失败时立即退出安装"
+  ].join("\n");
+}
+
+function buildKimiMirrorCliInstallPlanPreview() {
+  return [
+    `步骤 1: 探测索引可用性（curl，connect ${MIRROR_PROBE_CONNECT_TIMEOUT_SEC} 秒，max ${MIRROR_PROBE_MAX_TIME_SEC} 秒）`,
+    `  - ${UV_TUNA_SIMPLE_INDEX_URL}`,
+    `  - ${UV_ALIYUN_SIMPLE_INDEX_URL}`,
+    "步骤 2: 对可用索引逐个执行以下命令：",
+    `  - uv tool install kimi-cli --python '<Python313 路径或 ${KIMI_TARGET_PYTHON_VERSION}>' -i '<索引地址>'`,
+    "步骤 3: 全部索引失败时立即退出安装"
+  ].join("\n");
+}
+
+function buildEnsureUvCommandLines(includeVersionCheck: boolean) {
+  const lines = [
+    "$__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
+    "if (-not $__execlink_uv_cmd) { $__execlink_winget_cmd = Get-Command winget -ErrorAction SilentlyContinue; if ($__execlink_winget_cmd) { try { winget install --id astral-sh.uv -e --source winget --accept-source-agreements --accept-package-agreements } catch { Write-Host 'winget install for uv failed; continue with official installer script.' } } }",
+    "$__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
+    "if (-not $__execlink_uv_cmd) { try { Invoke-RestMethod -Uri 'https://astral.sh/uv/install.ps1' | Invoke-Expression } catch { Write-Host 'official uv installer script failed.' } }",
+    "$__execlink_uv_candidate_dirs = @((Join-Path $HOME '.local\\bin'), (Join-Path $HOME '.cargo\\bin'))",
+    "foreach ($__execlink_uv_bin_dir in $__execlink_uv_candidate_dirs) { if ((Test-Path $__execlink_uv_bin_dir) -and ($env:Path -notlike \"*$__execlink_uv_bin_dir*\")) { $env:Path = \"$__execlink_uv_bin_dir;$env:Path\" } }",
+    "$__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
+    "if (-not $__execlink_uv_cmd) {",
+    "  throw 'uv not found after installation. Run: winget install --id astral-sh.uv -e'",
+    "}"
+  ];
+  if (includeVersionCheck) {
+    lines.push("uv --version");
+  }
+  return lines;
+}
+
 function buildKimiToolInstallCommand(useMirror: boolean, ensureUv: boolean) {
   const lines = ["$ErrorActionPreference='Stop'"];
 
   if (ensureUv) {
-    lines.push(
-      "$__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
-      "if (-not $__execlink_uv_cmd) {",
-      "  Invoke-RestMethod -Uri 'https://astral.sh/uv/install.ps1' | Invoke-Expression",
-      "  $__execlink_uv_bin_dir = Join-Path $HOME '.local\\bin'",
-      "  if (Test-Path $__execlink_uv_bin_dir) {",
-      "    $env:Path = \"$__execlink_uv_bin_dir;$env:Path\"",
-      "  }",
-      "  $__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
-      "}",
-      "if (-not $__execlink_uv_cmd) {",
-      "  throw 'uv not found after installation.'",
-      "}"
-    );
+    lines.push(...buildEnsureUvCommandLines(false));
   }
 
   lines.push(buildKimiPythonInstallCommand(useMirror));
@@ -226,23 +329,17 @@ function buildKimiToolInstallCommand(useMirror: boolean, ensureUv: boolean) {
   return lines.join("\n");
 }
 
-function buildKimiUvBootstrapCommand() {
-  return [
-    "$ErrorActionPreference='Stop'",
-    "$__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
-    "if (-not $__execlink_uv_cmd) {",
-    "  Invoke-RestMethod -Uri 'https://astral.sh/uv/install.ps1' | Invoke-Expression",
-    "  $__execlink_uv_bin_dir = Join-Path $HOME '.local\\bin'",
-    "  if (Test-Path $__execlink_uv_bin_dir) {",
-    "    $env:Path = \"$__execlink_uv_bin_dir;$env:Path\"",
-    "  }",
-    "}",
-    "$__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
-    "if (-not $__execlink_uv_cmd) {",
-    "  throw 'uv not found after installation.'",
-    "}",
-    "uv --version"
-  ].join("\n");
+function buildKimiUvBootstrapCommands() {
+  return ["$ErrorActionPreference='Stop'", ...buildEnsureUvCommandLines(true)];
+}
+
+function encodeUtf8ToBase64(value: string) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return window.btoa(binary);
 }
 
 function buildInstallCommandForMode(key: CliKey, installCommand: string, mode: InstallLaunchMode) {
@@ -285,6 +382,7 @@ export function HomePage() {
   const [loadingHkcuGroups, setLoadingHkcuGroups] = useState(false);
   const [windowBusy, setWindowBusy] = useState(false);
   const [usageGuideOpen, setUsageGuideOpen] = useState(false);
+  const [gitSourceDialogOpen, setGitSourceDialogOpen] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>({
     open: false,
     title: "",
@@ -302,6 +400,7 @@ export function HomePage() {
   );
   const terminalUnlistenRef = useRef<UnlistenFn[]>([]);
   const confirmResolveRef = useRef<((accepted: boolean) => void) | null>(null);
+  const gitSourceResolveRef = useRef<((source: GitInstallSource | null) => void) | null>(null);
   const toastManager = Toast.useToastManager();
   const toastAddRef = useRef(toastManager.add);
   const configRef = useRef(config);
@@ -332,6 +431,13 @@ export function HomePage() {
       __EXECLINK_TERMINAL_BUFFER__?: string;
     };
     host.__EXECLINK_TERMINAL_BUFFER__ = "";
+  }, []);
+
+  const getTerminalPanelBuffer = useCallback(() => {
+    const host = window as Window & {
+      __EXECLINK_TERMINAL_BUFFER__?: string;
+    };
+    return host.__EXECLINK_TERMINAL_BUFFER__ ?? "";
   }, []);
 
   const stopInstallPolling = useCallback(() => {
@@ -438,6 +544,15 @@ export function HomePage() {
     }
   }, []);
 
+  const settleGitSourceDialog = useCallback((source: GitInstallSource | null) => {
+    const resolver = gitSourceResolveRef.current;
+    gitSourceResolveRef.current = null;
+    setGitSourceDialogOpen(false);
+    if (resolver) {
+      resolver(source);
+    }
+  }, []);
+
   const requestConfirm = useCallback(
     (options: {
       title: string;
@@ -470,6 +585,26 @@ export function HomePage() {
       if (confirmResolveRef.current) {
         confirmResolveRef.current(false);
         confirmResolveRef.current = null;
+      }
+    };
+  }, []);
+
+  const requestGitInstallSource = useCallback(() => {
+    if (gitSourceResolveRef.current) {
+      gitSourceResolveRef.current(null);
+      gitSourceResolveRef.current = null;
+    }
+    return new Promise<GitInstallSource | null>((resolve) => {
+      gitSourceResolveRef.current = resolve;
+      setGitSourceDialogOpen(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (gitSourceResolveRef.current) {
+        gitSourceResolveRef.current(null);
+        gitSourceResolveRef.current = null;
       }
     };
   }, []);
@@ -614,6 +749,122 @@ export function HomePage() {
       appendTerminalPanelOutput(`\n[ExecLink] ${label}\n> ${script}\n`);
     },
     [appendTerminalPanelOutput]
+  );
+
+  const runTerminalScriptAndWait = useCallback(
+    async (label: string, script: string, timeoutMs = INSTALL_RECHECK_TIMEOUT_MS): Promise<ActionResult> => {
+      const marker = `execlink_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const baselineBuffer = getTerminalPanelBuffer();
+      const baselineLength = baselineBuffer.length;
+      const encodedScript = encodeUtf8ToBase64(script);
+      const wrappedScript = [
+        "$ErrorActionPreference='Stop'",
+        `$__execlink_script_b64='${encodedScript}'`,
+        "$__execlink_script_text=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($__execlink_script_b64))",
+        `$__execlink_result_marker='${marker}'`,
+        "$__execlink_result_error=$null",
+        "$global:LASTEXITCODE=0",
+        "try { & ([ScriptBlock]::Create($__execlink_script_text)) } catch { $__execlink_result_error=$_.Exception.Message }",
+        "if (-not $__execlink_result_error -and $null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {",
+        "  $__execlink_result_error='native_exit_code=' + $LASTEXITCODE",
+        "}",
+        "if ($__execlink_result_error) {",
+        "  Write-Output ('[ExecLink][Result][' + $__execlink_result_marker + '][FAIL]')",
+        "  Write-Output ('[ExecLink][Error][' + $__execlink_result_marker + '] ' + $__execlink_result_error)",
+        "} else {",
+        "  Write-Output ('[ExecLink][Result][' + $__execlink_result_marker + '][OK]')",
+        "}"
+      ].join("; ");
+
+      const submitResult = await terminalRunScript(wrappedScript);
+      if (!submitResult.ok) {
+        return {
+          ...submitResult,
+          code: "terminal_script_submit_failed",
+          message: `${label} 写入终端失败`
+        };
+      }
+
+      const okToken = `[ExecLink][Result][${marker}][OK]`;
+      const failToken = `[ExecLink][Result][${marker}][FAIL]`;
+      const errorToken = `[ExecLink][Error][${marker}]`;
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const currentBuffer = getTerminalPanelBuffer();
+        const segment = currentBuffer.length >= baselineLength ? currentBuffer.slice(baselineLength) : currentBuffer;
+        if (segment.includes(okToken)) {
+          return {
+            ok: true,
+            code: "terminal_script_completed",
+            message: `${label} 执行成功`,
+            detail: script
+          };
+        }
+        if (segment.includes(failToken)) {
+          const errorIndex = segment.lastIndexOf(errorToken);
+          let detail: string | null = null;
+          if (errorIndex >= 0) {
+            const errorText = segment.slice(errorIndex + errorToken.length).trimStart();
+            const firstLine = errorText.split(/\r?\n/, 1)[0]?.trim();
+            detail = firstLine ? firstLine : null;
+          }
+          return {
+            ok: false,
+            code: "terminal_script_runtime_failed",
+            message: `${label} 执行失败`,
+            detail: detail ?? `${label} failed in embedded terminal.`
+          };
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+      }
+
+      return {
+        ok: false,
+        code: "terminal_script_result_timeout",
+        message: `${label} 执行超时`,
+        detail: (() => {
+          const currentBuffer = getTerminalPanelBuffer();
+          const segment = currentBuffer.length >= baselineLength ? currentBuffer.slice(baselineLength) : currentBuffer;
+          const tail = segment
+            .split(/\r?\n/)
+            .filter((line) => line.trim().length > 0)
+            .slice(-40)
+            .join("\n")
+            .trim();
+          if (!tail) {
+            return `未在 ${Math.round(timeoutMs / 1000)} 秒内收到终端结果标记。`;
+          }
+          return `未在 ${Math.round(timeoutMs / 1000)} 秒内收到终端结果标记。\n最近终端输出：\n${tail}`;
+        })()
+      };
+    },
+    [getTerminalPanelBuffer]
+  );
+
+  const runTerminalCommandsSequentially = useCallback(
+    async (label: string, commands: string[]): Promise<ActionResult> => {
+      const filtered = commands.map((command) => command.trim()).filter((command) => command.length > 0);
+      const total = filtered.length;
+      for (let index = 0; index < total; index += 1) {
+        const command = filtered[index];
+        appendTerminalPanelOutput(`\n[ExecLink] ${label} [${index + 1}/${total}]\n> ${command}\n`);
+        const result = await runTerminalScriptAndWait(`${label} 第 ${index + 1} 步`, command);
+        if (!result.ok) {
+          return {
+            ...result,
+            code: "terminal_step_failed",
+            message: `${label} 第 ${index + 1} 步执行失败`
+          };
+        }
+      }
+      return {
+        ok: true,
+        code: "terminal_steps_completed",
+        message: `${label} 命令执行完成`,
+        detail: filtered.join("\n")
+      };
+    },
+    [appendTerminalPanelOutput, runTerminalScriptAndWait]
   );
 
   const buildConfigWithCliDetected = useCallback(
@@ -1067,13 +1318,27 @@ export function HomePage() {
     });
   }, [runAction]);
 
-  const onLaunchGitPrereqInstall = useCallback(async () => {
-    await runAction(launchGitInstall);
-  }, [runAction]);
+  const onLaunchPrereqInstall = useCallback(async () => {
+    const needsGit = !installPrereq.git;
+    const needsNode = !installPrereq.node;
 
-  const onLaunchNodejsPrereqInstall = useCallback(async () => {
-    await runAction(launchNodejsInstall);
-  }, [runAction]);
+    let gitSource: GitInstallSource | undefined;
+    if (needsGit) {
+      const selected = await requestGitInstallSource();
+      if (!selected) {
+        setLastResult({
+          ok: false,
+          code: "prereq_install_cancelled",
+          message: "已取消前置环境安装",
+          detail: null
+        });
+        return;
+      }
+      gitSource = selected;
+    }
+
+    await runAction(() => launchPrereqInstall(gitSource));
+  }, [installPrereq.git, installPrereq.node, requestGitInstallSource, runAction]);
 
   const launchInstall = useCallback(
     async (key: CliKey, options?: InstallLaunchOptions) => {
@@ -1117,14 +1382,15 @@ export function HomePage() {
       if (!options?.skipPrimaryConfirm) {
         const firstConfirm = await requestConfirm({
           title: `确认安装 ${hint.display_name}${mirrorMode ? "（清华源）" : ""}`,
-          message: [
-            `将启动 ${hint.display_name} 安装（${installSourceLabel}）。`,
-            mirrorMode ? `\n镜像地址: ${UV_TUNA_SIMPLE_INDEX_URL}` : "",
-            mirrorMode && isKimiInstall ? `Python 安装镜像: ${UV_PYTHON_INSTALL_MIRROR_URL}` : "",
-            mirrorMode && isKimiInstall ? `Python 版本: ${KIMI_TARGET_PYTHON_VERSION}` : "",
-            mirrorMode && isKimiInstall ? "将先检测 uv；如缺失将自动安装 uv，再执行 uv 安装 Kimi CLI。" : "",
-            `\n命令:\n${effectiveInstallCommand}`,
-            `\n来源域名: ${hint.official_domain}`,
+            message: [
+              `将启动 ${hint.display_name} 安装（${installSourceLabel}）。`,
+              mirrorMode ? `\n镜像地址: ${UV_TUNA_SIMPLE_INDEX_URL}` : "",
+              mirrorMode && isKimiInstall ? `Python 安装器镜像: ${KIMI_TUNA_PYTHON_INSTALLER_URL}` : "",
+              mirrorMode && isKimiInstall ? `Python 安装器回退: ${KIMI_ALIYUN_PYTHON_INSTALLER_URL}` : "",
+              mirrorMode && isKimiInstall ? `Python 目标版本: ${KIMI_TARGET_PYTHON_PATCH_VERSION}` : "",
+              mirrorMode && isKimiInstall ? "将先检测 uv；如缺失将自动安装 uv，再执行 uv 安装 Kimi CLI。" : "",
+              `\n命令:\n${effectiveInstallCommand}`,
+              `\n来源域名: ${hint.official_domain}`,
             `发行方: ${hint.publisher}`,
             `\n前置检查:\n${precheckLines.join("\n")}`,
             "\n命令会在内置终端执行，继续吗？"
@@ -1528,7 +1794,8 @@ export function HomePage() {
         if (isKimiMirrorInstallKey(key)) {
           let uvReady = prereq.uv;
           if (!uvReady) {
-            const uvBootstrapCommand = buildKimiUvBootstrapCommand();
+            const uvBootstrapCommands = buildKimiUvBootstrapCommands();
+            const uvBootstrapCommand = uvBootstrapCommands.join("\n");
             const acceptedUvInstall = await requestConfirm({
               title: "确认执行 uv 安装命令",
               message: [
@@ -1558,8 +1825,10 @@ export function HomePage() {
             }
             setQuickPhase("precheck_uv", "未检测到 uv，准备安装 uv...");
             setQuickPhase("install_uv", "正在安装 uv...", uvBootstrapCommand);
-            emitTerminalScriptPreview("Kimi 前置：安装 uv", uvBootstrapCommand);
-            const uvScriptResult = await terminalRunScript(uvBootstrapCommand);
+            const uvScriptResult = await runTerminalCommandsSequentially(
+              "Kimi 前置：安装 uv",
+              uvBootstrapCommands
+            );
             if (!uvScriptResult.ok) {
               setQuickSetup({
                 key,
@@ -1614,8 +1883,12 @@ export function HomePage() {
             message: [
               "请选择 Kimi CLI 安装源。",
               "确认：官方源",
-              `取消：清华镜像（${UV_TUNA_SIMPLE_INDEX_URL}）`,
-              `清华源模式会设置 UV_PYTHON_INSTALL_MIRROR=${UV_PYTHON_INSTALL_MIRROR_URL} 并安装 Python ${KIMI_TARGET_PYTHON_VERSION}`
+              `取消：清华镜像（PyPI：${UV_TUNA_SIMPLE_INDEX_URL}）`,
+              `清华源模式会先尝试 Python 安装器镜像：${KIMI_TUNA_PYTHON_INSTALLER_URL}`,
+              `失败后自动尝试阿里镜像：${KIMI_ALIYUN_PYTHON_INSTALLER_URL}`,
+              `安装 kimi-cli 时会先尝试索引：${UV_TUNA_SIMPLE_INDEX_URL}`,
+              `失败后自动尝试索引：${UV_ALIYUN_SIMPLE_INDEX_URL}`,
+              "如果镜像安装失败，将立即报错并退出，不再等待复检。"
             ].join("\n"),
             confirmText: "使用官方源",
             cancelText: "使用清华源"
@@ -1623,17 +1896,31 @@ export function HomePage() {
 
           const installMode: InstallLaunchMode = useOfficialSource ? "official" : "mirror";
           const sourceLabel = installMode === "official" ? "官方源" : "清华源";
-          const pythonInstallCommand = buildKimiPythonInstallCommand(installMode === "mirror");
-          const kimiInstallCommand = buildKimiCliInstallCommand(installMode === "mirror");
+          const pythonMirrorCandidates = [KIMI_TUNA_PYTHON_INSTALLER_URL, KIMI_ALIYUN_PYTHON_INSTALLER_URL];
+          const kimiIndexCandidates = [UV_TUNA_SIMPLE_INDEX_URL, UV_ALIYUN_SIMPLE_INDEX_URL];
+          const pythonInstallCommand = buildKimiPythonInstallCommand(false);
+          const kimiInstallCommand = buildKimiCliInstallCommand(false);
+          const pythonRuntimeCheckCommand = buildKimiPythonRuntimeCheckCommand();
+          const pythonInstallPlanPreview =
+            installMode === "mirror" ? buildKimiMirrorPythonInstallPlanPreview() : pythonInstallCommand;
+          const kimiInstallPlanPreview =
+            installMode === "mirror" ? buildKimiMirrorCliInstallPlanPreview() : kimiInstallCommand;
 
           setQuickPhase("precheck_python", `正在检测 Python ${KIMI_TARGET_PYTHON_VERSION} 是否可用...`);
-          const initialPythonVerify = await verifyKimiPythonInstallation();
+          const initialPythonVerify =
+            installMode === "mirror"
+              ? await runTerminalScriptAndWait(
+                  `Python ${KIMI_TARGET_PYTHON_VERSION} 运行时预检`,
+                  pythonRuntimeCheckCommand,
+                  PYTHON_RUNTIME_CHECK_TIMEOUT_MS
+                )
+              : await verifyKimiPythonInstallation();
           if (!initialPythonVerify.ok) {
             const acceptedPythonInstall = await requestConfirm({
               title: `确认执行 Python ${KIMI_TARGET_PYTHON_VERSION} 安装命令（${sourceLabel}）`,
               message: [
                 `快速安装向导将执行以下命令安装 Python ${KIMI_TARGET_PYTHON_VERSION}（${sourceLabel}）：`,
-                `\n${pythonInstallCommand}`,
+                `\n${pythonInstallPlanPreview}`,
                 "\n以上命令将写入内置终端执行，是否继续？"
               ].join("\n"),
               confirmText: "继续执行",
@@ -1659,10 +1946,65 @@ export function HomePage() {
             setQuickPhase(
               "install_python",
               `正在执行 Python ${KIMI_TARGET_PYTHON_VERSION} 安装命令（${sourceLabel}）...`,
-              pythonInstallCommand
+              pythonInstallPlanPreview
             );
-            emitTerminalScriptPreview(`Python ${KIMI_TARGET_PYTHON_VERSION} 安装命令（${sourceLabel}）`, pythonInstallCommand);
-            const pythonInstallResult = await terminalRunScript(pythonInstallCommand);
+            emitTerminalScriptPreview(`Python ${KIMI_TARGET_PYTHON_VERSION} 安装计划（${sourceLabel}）`, pythonInstallPlanPreview);
+
+            let pythonInstallResult: ActionResult = {
+              ok: false,
+              code: "quick_setup_python_install_failed",
+              message: "快速安装向导 Python 安装失败",
+              detail: "Python 安装步骤未执行。"
+            };
+            let successfulPythonMirror: string | null = null;
+
+            if (installMode === "mirror") {
+              const failureDetails: string[] = [];
+              for (const mirrorUrl of pythonMirrorCandidates) {
+                const probeCommand = buildUrlProbeCommand(mirrorUrl);
+                setQuickPhase("install_python", `正在探测 Python 镜像可用性：${mirrorUrl}`, probeCommand);
+                emitTerminalScriptPreview(`Python 镜像探测（${mirrorUrl}）`, probeCommand);
+                const probeResult = await runTerminalScriptAndWait(
+                  `Python 镜像探测（${mirrorUrl}）`,
+                  probeCommand,
+                  MIRROR_PROBE_TIMEOUT_MS
+                );
+                if (!probeResult.ok) {
+                  failureDetails.push(`[probe] ${mirrorUrl} => ${probeResult.detail ?? probeResult.message}`);
+                  continue;
+                }
+
+                const steps = buildKimiMirrorPythonInstallSteps(mirrorUrl);
+                setQuickPhase(
+                  "install_python",
+                  `正在执行 Python ${KIMI_TARGET_PYTHON_VERSION} 安装（镜像：${mirrorUrl}）...`,
+                  steps.join("\n")
+                );
+                pythonInstallResult = await runTerminalCommandsSequentially(
+                  `Python ${KIMI_TARGET_PYTHON_VERSION} 安装（${mirrorUrl}）`,
+                  steps
+                );
+                if (pythonInstallResult.ok) {
+                  successfulPythonMirror = mirrorUrl;
+                  break;
+                }
+                failureDetails.push(`[install] ${mirrorUrl} => ${pythonInstallResult.detail ?? pythonInstallResult.message}`);
+              }
+
+              if (!pythonInstallResult.ok) {
+                pythonInstallResult = {
+                  ...pythonInstallResult,
+                  code: "quick_setup_python_install_failed",
+                  message: "快速安装向导 Python 安装失败",
+                  detail: failureDetails.join("\n") || pythonInstallResult.detail || "所有镜像均不可用或安装失败。"
+                };
+              }
+            } else {
+              pythonInstallResult = await runTerminalScriptAndWait(
+                `Python ${KIMI_TARGET_PYTHON_VERSION} 安装（${sourceLabel}）`,
+                pythonInstallCommand
+              );
+            }
             if (!pythonInstallResult.ok) {
               setQuickSetup({
                 key,
@@ -1682,39 +2024,74 @@ export function HomePage() {
             setLastResult({
               ok: true,
               code: "quick_setup_python_install_started",
-              message: `已在内置终端执行 Python ${KIMI_TARGET_PYTHON_VERSION} 安装命令（${sourceLabel}）`,
-              detail: pythonInstallCommand
+              message:
+                installMode === "mirror" && successfulPythonMirror
+                  ? `Python ${KIMI_TARGET_PYTHON_VERSION} 已通过镜像安装：${successfulPythonMirror}`
+                  : `已在内置终端执行 Python ${KIMI_TARGET_PYTHON_VERSION} 安装命令（${sourceLabel}）`,
+              detail:
+                installMode === "mirror" && successfulPythonMirror
+                  ? successfulPythonMirror
+                  : pythonInstallCommand
             });
 
-            setQuickPhase("verify_python", `等待 Python ${KIMI_TARGET_PYTHON_VERSION} 安装检测结果...`);
-            const pythonStartedAt = Date.now();
-            let pythonDetected = false;
-            let lastPythonVerifyDetail: string | null = initialPythonVerify.detail ?? null;
-            while (Date.now() - pythonStartedAt < QUICK_SETUP_DETECT_TIMEOUT_MS) {
-              const verify = await verifyKimiPythonInstallation();
-              lastPythonVerifyDetail = verify.detail ?? null;
-              if (verify.ok) {
-                pythonDetected = true;
-                break;
+            if (installMode === "mirror") {
+              setQuickPhase(
+                "verify_python",
+                `正在快速检测 Python ${KIMI_TARGET_PYTHON_VERSION} 运行时...`,
+                pythonRuntimeCheckCommand
+              );
+              const runtimeVerifyResult = await runTerminalScriptAndWait(
+                `Python ${KIMI_TARGET_PYTHON_VERSION} 运行时检测`,
+                pythonRuntimeCheckCommand,
+                PYTHON_RUNTIME_CHECK_TIMEOUT_MS
+              );
+              if (!runtimeVerifyResult.ok) {
+                setQuickSetup({
+                  key,
+                  phase: "failed",
+                  running: false,
+                  message: `Python ${KIMI_TARGET_PYTHON_VERSION} 安装后快速复检失败`,
+                  detail: runtimeVerifyResult.detail ?? "请检查终端输出，确认 Python 已安装后重试。"
+                });
+                setLastResult({
+                  ok: false,
+                  code: "quick_setup_python_verify_failed",
+                  message: "快速安装向导 Python 复检未通过",
+                  detail: runtimeVerifyResult.detail
+                });
+                return;
               }
-              await wait(INSTALL_RECHECK_INTERVAL_MS);
-            }
+            } else {
+              setQuickPhase("verify_python", `等待 Python ${KIMI_TARGET_PYTHON_VERSION} 安装检测结果...`);
+              const pythonStartedAt = Date.now();
+              let pythonDetected = false;
+              let lastPythonVerifyDetail: string | null = initialPythonVerify.detail ?? null;
+              while (Date.now() - pythonStartedAt < QUICK_SETUP_DETECT_TIMEOUT_MS) {
+                const verify = await verifyKimiPythonInstallation();
+                lastPythonVerifyDetail = verify.detail ?? null;
+                if (verify.ok) {
+                  pythonDetected = true;
+                  break;
+                }
+                await wait(INSTALL_RECHECK_INTERVAL_MS);
+              }
 
-            if (!pythonDetected) {
-              setQuickSetup({
-                key,
-                phase: "failed",
-                running: false,
-                message: `Python ${KIMI_TARGET_PYTHON_VERSION} 安装后复检超时`,
-                detail: lastPythonVerifyDetail ?? "请检查终端输出，确认 Python 已安装后重试。"
-              });
-              setLastResult({
-                ok: false,
-                code: "quick_setup_python_verify_failed",
-                message: "快速安装向导 Python 复检未通过",
-                detail: lastPythonVerifyDetail
-              });
-              return;
+              if (!pythonDetected) {
+                setQuickSetup({
+                  key,
+                  phase: "failed",
+                  running: false,
+                  message: `Python ${KIMI_TARGET_PYTHON_VERSION} 安装后复检超时`,
+                  detail: lastPythonVerifyDetail ?? "请检查终端输出，确认 Python 已安装后重试。"
+                });
+                setLastResult({
+                  ok: false,
+                  code: "quick_setup_python_verify_failed",
+                  message: "快速安装向导 Python 复检未通过",
+                  detail: lastPythonVerifyDetail
+                });
+                return;
+              }
             }
           } else {
             setQuickPhase("precheck_python", `已检测到 Python ${KIMI_TARGET_PYTHON_VERSION}，跳过安装步骤。`);
@@ -1724,7 +2101,7 @@ export function HomePage() {
             title: `确认执行 Kimi 安装命令（${sourceLabel}）`,
             message: [
               `快速安装向导将执行以下命令安装 Kimi CLI（${sourceLabel}）：`,
-              `\n${kimiInstallCommand}`,
+              `\n${kimiInstallPlanPreview}`,
               "\n以上命令将写入内置终端执行，是否继续？"
             ].join("\n"),
             confirmText: "继续执行",
@@ -1747,9 +2124,54 @@ export function HomePage() {
             return;
           }
 
-          setQuickPhase("install_kimi", `正在执行 Kimi 安装命令（${sourceLabel}）...`, kimiInstallCommand);
-          emitTerminalScriptPreview(`Kimi 安装命令（${sourceLabel}）`, kimiInstallCommand);
-          const kimiInstallResult = await terminalRunScript(kimiInstallCommand);
+          setQuickPhase("install_kimi", `正在执行 Kimi 安装命令（${sourceLabel}）...`, kimiInstallPlanPreview);
+          emitTerminalScriptPreview(`Kimi 安装计划（${sourceLabel}）`, kimiInstallPlanPreview);
+
+          let kimiInstallResult: ActionResult = {
+            ok: false,
+            code: "quick_setup_kimi_install_failed",
+            message: "快速安装向导 Kimi 安装失败",
+            detail: "Kimi 安装步骤未执行。"
+          };
+          let successfulKimiIndex: string | null = null;
+
+          if (installMode === "mirror") {
+            const failureDetails: string[] = [];
+            for (const indexUrl of kimiIndexCandidates) {
+              const probeCommand = buildUrlProbeCommand(indexUrl);
+              setQuickPhase("install_kimi", `正在探测包索引可用性：${indexUrl}`, probeCommand);
+              emitTerminalScriptPreview(`Kimi 索引探测（${indexUrl}）`, probeCommand);
+              const probeResult = await runTerminalScriptAndWait(
+                `Kimi 索引探测（${indexUrl}）`,
+                probeCommand,
+                MIRROR_PROBE_TIMEOUT_MS
+              );
+              if (!probeResult.ok) {
+                failureDetails.push(`[probe] ${indexUrl} => ${probeResult.detail ?? probeResult.message}`);
+                continue;
+              }
+
+              const steps = buildKimiMirrorCliInstallSteps(indexUrl);
+              setQuickPhase("install_kimi", `正在执行 Kimi 安装（索引：${indexUrl}）...`, steps.join("\n"));
+              kimiInstallResult = await runTerminalCommandsSequentially(`Kimi 安装（${indexUrl}）`, steps);
+              if (kimiInstallResult.ok) {
+                successfulKimiIndex = indexUrl;
+                break;
+              }
+              failureDetails.push(`[install] ${indexUrl} => ${kimiInstallResult.detail ?? kimiInstallResult.message}`);
+            }
+
+            if (!kimiInstallResult.ok) {
+              kimiInstallResult = {
+                ...kimiInstallResult,
+                code: "quick_setup_kimi_install_failed",
+                message: "快速安装向导 Kimi 安装失败",
+                detail: failureDetails.join("\n") || kimiInstallResult.detail || "所有索引均不可用或安装失败。"
+              };
+            }
+          } else {
+            kimiInstallResult = await runTerminalScriptAndWait(`Kimi 安装（${sourceLabel}）`, kimiInstallCommand);
+          }
           if (!kimiInstallResult.ok) {
             setQuickSetup({
               key,
@@ -1769,8 +2191,14 @@ export function HomePage() {
           setLastResult({
             ok: true,
             code: "quick_setup_kimi_install_started",
-            message: `已在内置终端执行 Kimi 安装命令（${sourceLabel}）`,
-            detail: kimiInstallCommand
+            message:
+              installMode === "mirror" && successfulKimiIndex
+                ? `Kimi 已通过索引安装：${successfulKimiIndex}`
+                : `已在内置终端执行 Kimi 安装命令（${sourceLabel}）`,
+            detail:
+              installMode === "mirror" && successfulKimiIndex
+                ? successfulKimiIndex
+                : kimiInstallCommand
           });
 
           setQuickPhase("verify_kimi", "等待 Kimi 安装检测结果...");
@@ -2012,6 +2440,8 @@ export function HomePage() {
       requestConfirm,
       refreshInitialState,
       runAction,
+      runTerminalCommandsSequentially,
+      runTerminalScriptAndWait,
       scheduleTerminalAutoClose,
       setQuickPhase,
       verifyKimiInstallation
@@ -2287,6 +2717,19 @@ export function HomePage() {
 
   const orderedCliKeys = useMemo(() => normalizeCliOrder(config.cli_order), [config.cli_order]);
   const canOperate = install.installed && install.registered && !install.needs_elevation;
+  const showPrereqInstallButton = !installPrereq.git || !installPrereq.node;
+  const prereqInstallButtonLabel = useMemo(() => {
+    if (!installPrereq.git && !installPrereq.node) {
+      return "安装前置环境";
+    }
+    if (!installPrereq.git) {
+      return "安装 Git";
+    }
+    if (!installPrereq.node) {
+      return "安装 Node.js";
+    }
+    return "安装前置环境";
+  }, [installPrereq.git, installPrereq.node]);
 
   useEffect(() => {
     void refreshHkcuGroups(true);
@@ -2378,26 +2821,13 @@ export function HomePage() {
               </svg>
             </button>
           </div>
-          <div className="flex items-center justify-end gap-1.5">
+          <div className="flex flex-wrap items-center justify-end gap-1.5">
             <button className={HEADER_ACTION_BUTTON_CLASS} onClick={onDetect} disabled={working || loading}>
               刷新 CLI 检测
             </button>
-            {!installPrereq.git ? (
-              <button
-                className={HEADER_ACTION_BUTTON_CLASS}
-                onClick={onLaunchGitPrereqInstall}
-                disabled={working || loading}
-              >
-                安装 Git
-              </button>
-            ) : null}
-            {!installPrereq.node ? (
-              <button
-                className={HEADER_ACTION_BUTTON_CLASS}
-                onClick={onLaunchNodejsPrereqInstall}
-                disabled={working || loading}
-              >
-                安装 Node.js
+            {showPrereqInstallButton ? (
+              <button className={HEADER_ACTION_BUTTON_CLASS} onClick={onLaunchPrereqInstall} disabled={working || loading}>
+                {prereqInstallButtonLabel}
               </button>
             ) : null}
             {canOperate ? (
@@ -2468,6 +2898,7 @@ export function HomePage() {
                 installingKey={installingKey}
                 focusedCliKey={focusedCliKey}
                 terminalState={terminalState}
+                suppressTerminal={Boolean(quickSetup.key)}
                 onReorder={(nextOrder) =>
                   setConfig((prev) => ({
                     ...prev,
@@ -2666,6 +3097,13 @@ export function HomePage() {
           GitHub Repository
         </a>
       </footer>
+
+      <GitInstallSourceDialog
+        open={gitSourceDialogOpen}
+        onSelectOfficial={() => settleGitSourceDialog("official")}
+        onSelectTuna={() => settleGitSourceDialog("tuna")}
+        onCancel={() => settleGitSourceDialog(null)}
+      />
 
       <AppConfirmDialog
         open={confirmDialog.open}

@@ -24,6 +24,7 @@ fn main() {
             commands::get_initial_state,
             commands::detect_clis,
             commands::get_install_prereq_status,
+            commands::launch_prereq_install,
             commands::launch_git_install,
             commands::launch_nodejs_install,
             commands::launch_cli_install,

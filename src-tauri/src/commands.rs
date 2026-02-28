@@ -29,7 +29,15 @@ const ALLOWED_DOCS_DOMAINS: [&str; 7] = [
 const NODEJS_DOWNLOAD_URL: &str = "https://nodejs.org/zh-cn/download";
 const GIT_WINGET_INSTALL_COMMAND: &str = "winget install --id Git.Git -e --source winget";
 const NODEJS_WINGET_INSTALL_COMMAND: &str = "winget install OpenJS.NodeJS";
+const GIT_TUNA_LATEST_RELEASE_URL: &str =
+    "https://mirrors.tuna.tsinghua.edu.cn/github-release/git-for-windows/git/LatestRelease/";
 const KIMI_TARGET_PYTHON_VERSION: &str = "3.13";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitInstallSource {
+    Official,
+    Tuna,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct HkcuMenuGroup {
@@ -261,6 +269,82 @@ fn find_cli_install_profile(key: &str) -> Option<&'static CliInstallProfile> {
     CLI_INSTALL_PROFILES
         .iter()
         .find(|profile| profile.key == key)
+}
+
+fn parse_git_install_source(value: Option<String>) -> GitInstallSource {
+    match value.as_deref() {
+        Some("tuna") => GitInstallSource::Tuna,
+        _ => GitInstallSource::Official,
+    }
+}
+
+fn git_install_source_label(source: GitInstallSource) -> &'static str {
+    match source {
+        GitInstallSource::Official => "官方源",
+        GitInstallSource::Tuna => "清华源",
+    }
+}
+
+fn build_git_tuna_install_command() -> String {
+    [
+        "$ErrorActionPreference='Stop'",
+        &format!("$latestReleaseUrl = '{GIT_TUNA_LATEST_RELEASE_URL}'"),
+        "$baseUri = [System.Uri]$latestReleaseUrl",
+        "$latestReleasePage = Invoke-WebRequest -Uri $latestReleaseUrl",
+        "$latestLinks = @($latestReleasePage.Links | Where-Object { $_.href })",
+        "$installerHref = $latestLinks | ForEach-Object { $_.href } | Where-Object { $_ -match '(?i)Git-[^/]*-64-bit\\.exe$' } | Select-Object -First 1",
+        "$versionDirHref = $latestLinks | ForEach-Object { $_.href } | Where-Object { $_ -match '(?i)Git%20for%20Windows%20v[^/]+/?$' } | Select-Object -First 1",
+        "if ((-not $installerHref) -and $versionDirHref) {",
+        "  $versionDirUrl = [System.Uri]::new($baseUri, $versionDirHref).AbsoluteUri",
+        "  $versionPage = Invoke-WebRequest -Uri $versionDirUrl",
+        "  $versionLinks = @($versionPage.Links | Where-Object { $_.href })",
+        "  $installerHref = $versionLinks | ForEach-Object { $_.href } | Where-Object { $_ -match '(?i)Git-[^/]*-64-bit\\.exe$' } | Select-Object -First 1",
+        "  if ($installerHref) { $baseUri = [System.Uri]$versionDirUrl }",
+        "}",
+        "if (-not $installerHref) { throw '清华源页面未找到 Git for Windows 64-bit 安装包链接。' }",
+        "$tunaUrl = [System.Uri]::new($baseUri, $installerHref).AbsoluteUri",
+        "$installerPath = Join-Path $env:TEMP 'Git-Installer.exe'",
+        "Invoke-WebRequest -Uri $tunaUrl -OutFile $installerPath",
+        "Start-Process -FilePath $installerPath -Wait",
+        "Write-Host 'Git 安装程序执行完成。'",
+    ]
+    .join("; ")
+}
+
+fn build_prereq_install_command(
+    needs_git: bool,
+    needs_node: bool,
+    git_source: GitInstallSource,
+) -> Option<String> {
+    let mut steps: Vec<String> = Vec::new();
+    if needs_git {
+        let git_command = match git_source {
+            GitInstallSource::Official => GIT_WINGET_INSTALL_COMMAND.to_string(),
+            GitInstallSource::Tuna => build_git_tuna_install_command(),
+        };
+        steps.push(git_command);
+    }
+    if needs_node {
+        steps.push(NODEJS_WINGET_INSTALL_COMMAND.to_string());
+    }
+    if steps.is_empty() {
+        return None;
+    }
+
+    let total = steps.len();
+    let mut script_parts: Vec<String> = vec!["$ErrorActionPreference='Continue'".to_string()];
+    for (idx, step) in steps.iter().enumerate() {
+        script_parts.push(step.clone());
+        script_parts.push("Write-Host ''".to_string());
+        script_parts.push(format!(
+            "Write-Host '[{}/{}] 前置安装步骤执行完成。'",
+            idx + 1,
+            total
+        ));
+    }
+    script_parts.push("Write-Host ''".to_string());
+    script_parts.push("Write-Host '前置环境安装命令已执行，请在该终端确认结果。'".to_string());
+    Some(script_parts.join("; "))
 }
 
 fn build_install_script(install_command: &str) -> String {
@@ -715,6 +799,82 @@ pub fn get_install_prereq_status() -> InstallPrereqStatus {
         pwsh: detect::command_exists_with_path("pwsh", path_ref),
         winget: detect::command_exists_with_path("winget", path_ref),
         wsl: detect::command_exists_with_path("wsl", path_ref),
+    }
+}
+
+#[tauri::command]
+pub fn launch_prereq_install(git_source: Option<String>) -> ActionResult {
+    let prereq = get_install_prereq_status();
+    let needs_git = !prereq.git;
+    let needs_node = !prereq.node;
+    if !needs_git && !needs_node {
+        return ActionResult::ok_with_code(
+            "prereq_already_installed",
+            "已检测到 Git 与 Node.js，无需安装。",
+        );
+    }
+
+    let parsed_git_source = parse_git_install_source(git_source);
+    let git_source_label = git_install_source_label(parsed_git_source);
+
+    if needs_node && !prereq.winget {
+        return ActionResult::err(
+            "winget_missing",
+            "启动前置环境安装失败",
+            "未检测到 winget，请先安装 App Installer 后重试。",
+        );
+    }
+    if needs_git && matches!(parsed_git_source, GitInstallSource::Official) && !prereq.winget {
+        return ActionResult::err(
+            "winget_missing",
+            "启动前置环境安装失败",
+            "官方源安装 Git 依赖 winget，请先安装 App Installer 后重试。",
+        );
+    }
+
+    let Some(command) = build_prereq_install_command(needs_git, needs_node, parsed_git_source) else {
+        return ActionResult::ok_with_code(
+            "prereq_already_installed",
+            "已检测到 Git 与 Node.js，无需安装。",
+        );
+    };
+
+    let scope_label = match (needs_git, needs_node) {
+        (true, true) => "Git 与 Node.js",
+        (true, false) => "Git",
+        (false, true) => "Node.js",
+        (false, false) => "前置环境",
+    };
+
+    match launch_elevated_powershell_install(&command) {
+        Ok(output) => {
+            logging::log_line(&format!(
+                "[prereq-install] combined install terminal started scope={} git_source={} command={} output={}",
+                scope_label, git_source_label, command, output
+            ));
+            let message = if needs_git {
+                format!(
+                    "已启动 {} 管理员安装终端（Git：{}），完成后请点击“刷新 CLI 检测”。",
+                    scope_label, git_source_label
+                )
+            } else {
+                format!(
+                    "已启动 {} 管理员安装终端，完成后请点击“刷新 CLI 检测”。",
+                    scope_label
+                )
+            };
+            ActionResult {
+                ok: true,
+                code: "prereq_install_launch_started".to_string(),
+                message,
+                detail: Some(format!("{command}; {output}")),
+            }
+        }
+        Err(error) => ActionResult::err(
+            "prereq_install_launch_failed",
+            "启动前置环境安装失败",
+            error,
+        ),
     }
 }
 
@@ -1547,6 +1707,51 @@ mod tests {
         });
         assert!(!result.ok);
         assert_eq!(result.code, "remote_script_confirmation_required");
+    }
+
+    #[test]
+    fn should_parse_git_install_source() {
+        assert_eq!(
+            parse_git_install_source(Some("tuna".to_string())),
+            GitInstallSource::Tuna
+        );
+        assert_eq!(
+            parse_git_install_source(Some("official".to_string())),
+            GitInstallSource::Official
+        );
+        assert_eq!(
+            parse_git_install_source(Some("unexpected".to_string())),
+            GitInstallSource::Official
+        );
+        assert_eq!(parse_git_install_source(None), GitInstallSource::Official);
+    }
+
+    #[test]
+    fn should_build_official_git_only_prereq_command() {
+        let command =
+            build_prereq_install_command(true, false, GitInstallSource::Official).expect("command");
+        assert!(command.contains(GIT_WINGET_INSTALL_COMMAND));
+        assert!(!command.contains(NODEJS_WINGET_INSTALL_COMMAND));
+    }
+
+    #[test]
+    fn should_build_tuna_git_and_node_prereq_command() {
+        let command =
+            build_prereq_install_command(true, true, GitInstallSource::Tuna).expect("command");
+        assert!(command.contains("github-release/git-for-windows/git/LatestRelease/"));
+        assert!(command.contains("$latestReleasePage.Links"));
+        assert!(command.contains("Git%20for%20Windows%20v"));
+        assert!(command.contains("$tunaUrl = [System.Uri]::new($baseUri, $installerHref).AbsoluteUri"));
+        assert!(!command.contains("$latestReleaseUrl$installerName"));
+        assert!(command.contains(NODEJS_WINGET_INSTALL_COMMAND));
+        assert!(!command.contains("api.github.com/repos/git-for-windows/git/releases/latest"));
+        assert!(!command.contains("releases/download"));
+    }
+
+    #[test]
+    fn should_skip_prereq_command_when_everything_exists() {
+        let command = build_prereq_install_command(false, false, GitInstallSource::Official);
+        assert!(command.is_none());
     }
 
     #[test]

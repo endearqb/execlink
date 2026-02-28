@@ -113,9 +113,10 @@ export function QuickSetupWizard({ status, onClose, onRetry }: Props) {
       <div className="rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-2 text-xs text-[var(--ui-text)] shadow-[3px_3px_6px_#d5d0c4,-3px_-3px_6px_#ffffff]">
         <div className="font-semibold">{PHASE_LABELS[status.phase] ?? status.phase}</div>
         <div className="mt-1 text-[var(--ui-muted)]">{status.message}</div>
+        <div className="mt-1 text-[11px] text-[var(--ui-muted)]">向导期间已隐藏内置终端；如需排查请展开详情。</div>
         {status.detail ? (
           <details className="mt-1.5 text-[11px]">
-            <summary className="cursor-pointer select-none text-[var(--ui-text)]">详情</summary>
+            <summary className="cursor-pointer select-none text-[var(--ui-text)]">详情（可展开）</summary>
             <pre className="mt-1 whitespace-pre-wrap break-all">{status.detail}</pre>
           </details>
         ) : null}

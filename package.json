@@ -1,13 +1,18 @@
 {
   "name": "execlink",
   "private": true,
-  "version": "0.2.5",
+  "version": "0.2.6",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "sync-version": "node scripts/sync-version.mjs",
+    "sync-version:check": "node scripts/sync-version.mjs --check",
+    "bump:patch": "npm version patch --no-git-tag-version && npm run sync-version",
+    "bump:minor": "npm version minor --no-git-tag-version && npm run sync-version",
+    "bump:major": "npm version major --no-git-tag-version && npm run sync-version",
+    "tauri": "npm run sync-version:check && tauri"
   },
   "dependencies": {
     "@base-ui/react": "^1.2.0",
@@ -29,5 +34,3 @@
     "vite": "^5.4.10"
   }
 }
-
-

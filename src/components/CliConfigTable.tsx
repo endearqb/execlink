@@ -73,6 +73,7 @@ interface CliConfigTableProps {
   installingKey: CliKey | null;
   focusedCliKey: CliKey | null;
   terminalState: string;
+  suppressTerminal: boolean;
   onReorder: (nextOrder: CliKey[]) => void;
   onSetDisplayName: (key: CliKey, value: string) => void;
   onSetToggle: (key: CliKey, checked: boolean) => void;
@@ -440,6 +441,7 @@ export function CliConfigTable({
   installingKey,
   focusedCliKey,
   terminalState,
+  suppressTerminal,
   onReorder,
   onSetDisplayName,
   onSetToggle,
@@ -515,7 +517,7 @@ export function CliConfigTable({
             working={working}
             installingKey={installingKey}
             focusMode={focusMode}
-            showTerminal={focusedCliKey === row.key}
+            showTerminal={focusedCliKey === row.key && !suppressTerminal}
             terminalState={terminalState}
             installPrereq={installPrereq}
             onSetDisplayName={onSetDisplayName}
