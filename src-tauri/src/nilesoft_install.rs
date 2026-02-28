@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
     path::{Path, PathBuf},
+    process::Output,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{path::BaseDirectory, AppHandle, Manager};
@@ -89,6 +90,15 @@ pub fn mark_register_failure(shell_exe: &Path, detail: impl Into<String>) {
             "[install] failed to persist register failure: {error}"
         ));
     }
+}
+
+pub fn clear_register_state() -> AppResult<()> {
+    let root = resolve_install_root()?;
+    let path = register_state_file(&root);
+    if !path.exists() {
+        return Ok(());
+    }
+    fs::remove_file(&path).map_err(|e| format!("清理注册状态标记失败: {e}"))
 }
 
 pub fn resolve_install_root() -> AppResult<PathBuf> {
@@ -352,6 +362,35 @@ pub fn attempt_unregister(shell_exe: &Path) -> AppResult<UnregisterResult> {
         .output()
         .map_err(|e| format!("执行反注册命令失败: {e}"))?;
 
+    parse_unregister_output(output)
+}
+
+pub fn attempt_unregister_elevated(shell_exe: &Path) -> AppResult<UnregisterResult> {
+    logging::log_line(&format!(
+        "[install] attempt unregister elevated via runas: {}",
+        shell_exe.display()
+    ));
+
+    let exe_path = shell_exe.display().to_string().replace('\'', "''");
+    let script = format!(
+        "$p = Start-Process -FilePath '{exe_path}' -ArgumentList '-unregister','-restart' -Verb RunAs -Wait -PassThru; exit $p.ExitCode"
+    );
+
+    let output = process_util::command_hidden("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .output()
+        .map_err(|e| format!("触发提权反注册失败: {e}"))?;
+
+    parse_unregister_output(output).map_err(|e| format!("提权反注册失败: {e}"))
+}
+
+fn parse_unregister_output(output: Output) -> AppResult<UnregisterResult> {
     if output.status.success() {
         return Ok(UnregisterResult::Done);
     }
@@ -383,6 +422,56 @@ pub fn attempt_unregister(shell_exe: &Path) -> AppResult<UnregisterResult> {
     Err(format!("执行反注册失败: {final_detail}"))
 }
 
+fn build_install_status(
+    install_root: &Path,
+    shell: &Path,
+    config_root: Option<String>,
+    active_root: Option<PathBuf>,
+    register_state: Option<RegisterState>,
+) -> InstallStatus {
+    let shell_text = Some(shell.display().to_string());
+    let expected_root = shell.parent().unwrap_or(install_root);
+
+    if let Some(active_root) = active_root {
+        let active_norm = normalize_path_for_compare(&active_root);
+        let expected_norm = normalize_path_for_compare(expected_root);
+        if active_norm == expected_norm {
+            return InstallStatus::ready("已安装并完成注册", shell_text, config_root);
+        }
+        return InstallStatus::installed_unregistered(
+            format!(
+                "检测到系统注册目录与当前安装目录不一致：active={} current={}。请点击“提权重试注册”完成迁移。",
+                active_root.display(),
+                expected_root.display()
+            ),
+            shell_text,
+            config_root,
+            true,
+        );
+    }
+
+    if let Some(saved) = register_state {
+        if saved.attempted && !saved.registered {
+            let detail = saved
+                .detail
+                .unwrap_or_else(|| "普通权限注册失败，请点击提权重试".to_string());
+            return InstallStatus::installed_unregistered(
+                format!("已安装但未完成注册：{detail}"),
+                shell_text,
+                config_root,
+                true,
+            );
+        }
+    }
+
+    InstallStatus::installed_unregistered(
+        "已安装，但未检测到系统注册状态。可点击“安装/修复 Nilesoft”重试注册。",
+        shell_text,
+        config_root,
+        false,
+    )
+}
+
 pub fn inspect_installation() -> InstallStatus {
     let root = match resolve_install_root() {
         Ok(value) => value,
@@ -393,67 +482,12 @@ pub fn inspect_installation() -> InstallStatus {
         return InstallStatus::not_installed("尚未安装 Nilesoft");
     };
 
-    let shell_text = Some(shell.display().to_string());
     let config_root = nilesoft::resolve_effective_config_root(&shell, &root)
         .ok()
         .map(|resolved| resolved.root.display().to_string());
     let register_state = load_register_state(&root);
-
-    if let Some(active_root) = registered_shell_root_dir() {
-        let expected_root = shell.parent().unwrap_or(root.as_path());
-        let active_norm = normalize_path_for_compare(&active_root);
-        let expected_norm = normalize_path_for_compare(expected_root);
-        if active_norm != expected_norm {
-            return InstallStatus::installed_unregistered(
-                format!(
-                    "检测到系统注册目录与当前安装目录不一致：active={} current={}。请点击“提权重试注册”完成迁移。",
-                    active_root.display(),
-                    expected_root.display()
-                ),
-                shell_text,
-                config_root,
-                true,
-            );
-        }
-    }
-
-    if let Some(saved) = register_state {
-        if saved.registered {
-            let shell_match = saved
-                .shell_exe
-                .as_ref()
-                .map(|value| value == &shell.display().to_string())
-                .unwrap_or(false);
-            if !shell_match {
-                return InstallStatus::installed_unregistered(
-                    "检测到 shell.exe 路径变化，需要重新注册。",
-                    shell_text,
-                    config_root,
-                    false,
-                );
-            }
-            return InstallStatus::ready("已安装并完成注册", shell_text, config_root);
-        }
-
-        if saved.attempted {
-            let detail = saved
-                .detail
-                .unwrap_or_else(|| "普通权限注册失败，请点击提权重试".to_string());
-            return InstallStatus::installed_unregistered(
-                format!("已安装但未完成注册: {detail}"),
-                shell_text,
-                config_root,
-                true,
-            );
-        }
-    }
-
-    InstallStatus::installed_unregistered(
-        "已安装，尚未确认注册状态。可点击“安装/修复 Nilesoft”重试注册。",
-        shell_text,
-        config_root,
-        false,
-    )
+    let active_root = registered_shell_root_dir();
+    build_install_status(&root, &shell, config_root, active_root, register_state)
 }
 
 pub fn ensure_installed(app: &AppHandle) -> AppResult<InstallStatus> {
@@ -498,5 +532,71 @@ pub fn ensure_installed(app: &AppHandle) -> AppResult<InstallStatus> {
                 true,
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_register_state(attempted: bool, registered: bool, detail: Option<&str>) -> RegisterState {
+        RegisterState {
+            attempted,
+            registered,
+            updated_at: "0".to_string(),
+            shell_exe: None,
+            detail: detail.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn should_mark_ready_when_registry_matches_shell_root() {
+        let install_root = PathBuf::from(r"C:\Users\tester\AppData\Local\execlink\nilesoft-shell");
+        let shell = install_root.join("shell.exe");
+        let status = build_install_status(
+            &install_root,
+            &shell,
+            Some("config".to_string()),
+            Some(install_root.clone()),
+            Some(sample_register_state(true, false, Some("legacy failure"))),
+        );
+
+        assert!(status.installed);
+        assert!(status.registered);
+        assert!(!status.needs_elevation);
+    }
+
+    #[test]
+    fn should_mark_unregistered_when_registry_missing_even_if_saved_registered() {
+        let install_root = PathBuf::from(r"C:\Users\tester\AppData\Local\execlink\nilesoft-shell");
+        let shell = install_root.join("shell.exe");
+        let status = build_install_status(
+            &install_root,
+            &shell,
+            Some("config".to_string()),
+            None,
+            Some(sample_register_state(true, true, None)),
+        );
+
+        assert!(status.installed);
+        assert!(!status.registered);
+        assert!(!status.needs_elevation);
+    }
+
+    #[test]
+    fn should_require_elevation_when_registry_points_to_other_root() {
+        let install_root = PathBuf::from(r"C:\Users\tester\AppData\Local\execlink\nilesoft-shell");
+        let shell = install_root.join("shell.exe");
+        let status = build_install_status(
+            &install_root,
+            &shell,
+            Some("config".to_string()),
+            Some(PathBuf::from(r"C:\Other\nilesoft")),
+            None,
+        );
+
+        assert!(status.installed);
+        assert!(!status.registered);
+        assert!(status.needs_elevation);
     }
 }

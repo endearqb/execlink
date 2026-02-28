@@ -2540,6 +2540,85 @@ export function HomePage() {
     }
   }, [refreshInitialState, requestConfirm, runAction]);
 
+  const onOneClickUnregisterCleanup = useCallback(async () => {
+    const accepted = await requestConfirm({
+      title: "确认一键反注册清理数据",
+      message: "将尝试反注册 Nilesoft，并清理 %LOCALAPPDATA%/execlink/ 下的数据。此操作不可撤销，是否继续？",
+      confirmText: "继续执行",
+      cancelText: "取消",
+      danger: true
+    });
+    if (!accepted) {
+      setLastResult({
+        ok: false,
+        code: "unregister_cleanup_cancelled",
+        message: "已取消一键反注册清理",
+        detail: null
+      });
+      return;
+    }
+
+    const asRuntimeError = (code: string, message: string, error: unknown): ActionResult => ({
+      ok: false,
+      code,
+      message,
+      detail: String(error)
+    });
+
+    setWorking(true);
+    try {
+      let unregisterResult: ActionResult;
+      try {
+        unregisterResult = await attemptUnregisterNilesoft();
+      } catch (error) {
+        unregisterResult = asRuntimeError("unregister_runtime_exception", "反注册执行失败", error);
+      }
+
+      let cleanupResult: ActionResult;
+      try {
+        cleanupResult = await cleanupAppData(CLEANUP_CONFIRM_TOKEN);
+      } catch (error) {
+        cleanupResult = asRuntimeError("cleanup_runtime_exception", "清理应用数据失败", error);
+      }
+
+      await refreshInitialState();
+
+      if (cleanupResult.ok && unregisterResult.ok) {
+        setLastResult({
+          ok: true,
+          code: "unregister_cleanup_done",
+          message: "一键反注册清理完成",
+          detail: cleanupResult.detail ?? unregisterResult.detail ?? null
+        });
+        return;
+      }
+
+      if (cleanupResult.ok && !unregisterResult.ok) {
+        setLastResult({
+          ok: true,
+          code: "unregister_cleanup_partial",
+          message: "应用数据已清理，但反注册未完成",
+          detail: [`[${unregisterResult.code}] ${unregisterResult.message}`, unregisterResult.detail]
+            .filter(Boolean)
+            .join("\n")
+        });
+        return;
+      }
+
+      setLastResult({
+        ok: false,
+        code: "unregister_cleanup_failed",
+        message: "一键反注册清理失败",
+        detail: [
+          `[${unregisterResult.code}] ${unregisterResult.message}${unregisterResult.detail ? `: ${unregisterResult.detail}` : ""}`,
+          `[${cleanupResult.code}] ${cleanupResult.message}${cleanupResult.detail ? `: ${cleanupResult.detail}` : ""}`
+        ].join("\n")
+      });
+    } finally {
+      setWorking(false);
+    }
+  }, [refreshInitialState, requestConfirm]);
+
   const onRepairMenuFallback = useCallback(async () => {
     const payload = normalizeLockedConfig({
       ...config,
@@ -2992,74 +3071,73 @@ export function HomePage() {
                   <section className={PANEL_BLOCK_CLASS}>
                     <h2 className={PANEL_TITLE_CLASS}>恢复与清理</h2>
                     <p className="text-sm text-[var(--ui-muted)]">
-                      用于卸载或异常恢复。建议先尝试反注册，再按需清理
+                      用于卸载或异常恢复。点击“一键反注册清理数据”会先尝试反注册，再清理
                       <code>%LOCALAPPDATA%/execlink/</code> 数据目录。
                     </p>
                     <div className="flex flex-wrap gap-2.5">
-                      <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={onAttemptUnregister} disabled={working || loading}>
-                        尝试反注册 Nilesoft
-                      </button>
-                      <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={onRepairMenuFallback} disabled={working || loading}>
-                        HKCU 一键修复菜单
-                      </button>
-                      <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={onRemoveMenuFallback} disabled={working || loading}>
-                        移除 HKCU 兜底菜单
-                      </button>
-                      <button className={RUNTIME_DANGER_BUTTON_CLASS} onClick={onCleanupData} disabled={working || loading}>
-                        清理应用数据
+                      <button
+                        className={RUNTIME_DANGER_BUTTON_CLASS}
+                        onClick={onOneClickUnregisterCleanup}
+                        disabled={working || loading}
+                      >
+                        一键反注册清理数据
                       </button>
                     </div>
-                    <div className={`grid gap-2 rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${OUTSET_SMALL}`}>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-sm font-semibold text-[var(--ui-text)]">历史 HKCU 分组清理</span>
-                        <button
-                          className={RUNTIME_SECONDARY_BUTTON_CLASS}
-                          onClick={() => void refreshHkcuGroups(false)}
-                          disabled={working || loading || loadingHkcuGroups}
-                        >
-                          {loadingHkcuGroups ? "检测中..." : "检测历史分组"}
-                        </button>
-                        <button
-                          className={RUNTIME_DANGER_BUTTON_CLASS}
-                          onClick={onDeleteSelectedHkcuGroups}
-                          disabled={working || loading || selectedHkcuGroupKeys.length === 0}
-                        >
-                          删除选中分组
-                        </button>
-                      </div>
-                      {hkcuGroups.length === 0 ? (
-                        <p className="text-xs text-[var(--ui-muted)]">未检测到可清理的历史分组。</p>
-                      ) : (
-                        <div className="grid gap-1.5">
-                          {hkcuGroups.map((group) => {
-                            const checked = selectedHkcuGroupKeys.includes(group.key);
-                            return (
-                              <label
-                                key={group.key}
-                                className={`flex items-start gap-2 rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[var(--ui-base)] px-2.5 py-2 text-xs ${OUTSET_SMALL}`}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  onChange={(event) => onToggleHkcuGroupSelection(group.key, event.target.checked)}
-                                  disabled={working || loading}
-                                  className="mt-0.5"
-                                />
-                                <span className="grid gap-0.5">
-                                  <span className="font-semibold text-[var(--ui-text)]">
-                                    {group.title}{" "}
-                                    <span className="font-mono text-[11px] text-[var(--ui-muted)]">[{group.key}]</span>
-                                  </span>
-                                  <span className="text-[11px] text-[var(--ui-muted)]">
-                                    出现位置：{group.roots.join(" | ")}
-                                  </span>
-                                </span>
-                              </label>
-                            );
-                          })}
+                    <details className={`rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${OUTSET_SMALL}`}>
+                      <summary className="cursor-pointer select-none text-sm font-semibold text-[var(--ui-text)]">
+                        历史 HKCU 分组清理
+                      </summary>
+                      <div className="mt-2 grid gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            className={RUNTIME_SECONDARY_BUTTON_CLASS}
+                            onClick={() => void refreshHkcuGroups(false)}
+                            disabled={working || loading || loadingHkcuGroups}
+                          >
+                            {loadingHkcuGroups ? "检测中..." : "检测历史分组"}
+                          </button>
+                          <button
+                            className={RUNTIME_DANGER_BUTTON_CLASS}
+                            onClick={onDeleteSelectedHkcuGroups}
+                            disabled={working || loading || selectedHkcuGroupKeys.length === 0}
+                          >
+                            删除选中分组
+                          </button>
                         </div>
-                      )}
-                    </div>
+                        {hkcuGroups.length === 0 ? (
+                          <p className="text-xs text-[var(--ui-muted)]">未检测到可清理的历史分组。</p>
+                        ) : (
+                          <div className="grid gap-1.5">
+                            {hkcuGroups.map((group) => {
+                              const checked = selectedHkcuGroupKeys.includes(group.key);
+                              return (
+                                <label
+                                  key={group.key}
+                                  className={`flex items-start gap-2 rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[var(--ui-base)] px-2.5 py-2 text-xs ${OUTSET_SMALL}`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={(event) => onToggleHkcuGroupSelection(group.key, event.target.checked)}
+                                    disabled={working || loading}
+                                    className="mt-0.5"
+                                  />
+                                  <span className="grid gap-0.5">
+                                    <span className="font-semibold text-[var(--ui-text)]">
+                                      {group.title}{" "}
+                                      <span className="font-mono text-[11px] text-[var(--ui-muted)]">[{group.key}]</span>
+                                    </span>
+                                    <span className="text-[11px] text-[var(--ui-muted)]">
+                                      出现位置：{group.roots.join(" | ")}
+                                    </span>
+                                  </span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </details>
                   </section>
 
                   {!canOperate ? (

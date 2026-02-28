@@ -1325,16 +1325,58 @@ pub fn attempt_unregister_nilesoft() -> ActionResult {
         );
     };
 
+    let build_success = |code: &str, message: &str, primary_detail: Option<String>| {
+        let clear_detail = match nilesoft_install::clear_register_state() {
+            Ok(_) => None,
+            Err(error) => {
+                logging::log_line(&format!(
+                    "[install] unregister succeeded but clear register state failed: {error}"
+                ));
+                Some(error)
+            }
+        };
+
+        let detail = match (primary_detail, clear_detail) {
+            (Some(a), Some(b)) => Some(format!("{a}\n{b}")),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+
+        ActionResult {
+            ok: true,
+            code: code.to_string(),
+            message: message.to_string(),
+            detail,
+        }
+    };
+
     match nilesoft_install::attempt_unregister(&shell_exe) {
         Ok(nilesoft_install::UnregisterResult::Done) => {
-            ActionResult::ok_with_code("unregister_done", "已尝试执行反注册。")
+            build_success("unregister_done", "已尝试执行反注册。", None)
         }
         Ok(nilesoft_install::UnregisterResult::NotSupported(detail)) => ActionResult::err(
             "unregister_not_supported",
             "当前 Nilesoft 版本可能不支持反注册参数",
             detail,
         ),
-        Err(error) => ActionResult::err("unregister_failed", "反注册执行失败", error),
+        Err(normal_error) => match nilesoft_install::attempt_unregister_elevated(&shell_exe) {
+            Ok(nilesoft_install::UnregisterResult::Done) => build_success(
+                "unregister_done_elevated",
+                "普通权限反注册失败，已提权执行反注册。",
+                Some(format!("普通权限失败详情: {normal_error}")),
+            ),
+            Ok(nilesoft_install::UnregisterResult::NotSupported(detail)) => ActionResult::err(
+                "unregister_not_supported",
+                "当前 Nilesoft 版本可能不支持反注册参数",
+                format!("普通权限失败详情: {normal_error}\n提权结果: {detail}"),
+            ),
+            Err(elevated_error) => ActionResult::err(
+                "unregister_failed",
+                "反注册执行失败",
+                format!("普通权限失败详情: {normal_error}\n提权失败详情: {elevated_error}"),
+            ),
+        },
     }
 }
 
