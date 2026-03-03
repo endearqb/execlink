@@ -17,7 +17,7 @@ use crate::{
 };
 
 const CLEANUP_CONFIRM_TOKEN: &str = "CONFIRM_CLEANUP_EXECLINK";
-const ALLOWED_DOCS_DOMAINS: [&str; 7] = [
+const ALLOWED_DOCS_DOMAINS: [&str; 8] = [
     "code.claude.com",
     "developers.openai.com",
     "google-gemini.github.io",
@@ -25,8 +25,13 @@ const ALLOWED_DOCS_DOMAINS: [&str; 7] = [
     "qwenlm.github.io",
     "opencode.ai",
     "nodejs.org",
+    "apps.microsoft.com",
 ];
 const NODEJS_DOWNLOAD_URL: &str = "https://nodejs.org/zh-cn/download";
+const WINGET_BOOTSTRAP_URL: &str = "https://aka.ms/getwinget";
+const WINGET_STORE_URL: &str = "https://apps.microsoft.com/detail/9NBLGGH4NNS1";
+const WINGET_TUNA_LATEST_RELEASE_URL: &str =
+    "https://mirrors.tuna.tsinghua.edu.cn/github-release/microsoft/winget-cli/LatestRelease/";
 const GIT_WINGET_INSTALL_COMMAND: &str = "winget install --id Git.Git -e --source winget";
 const NODEJS_WINGET_INSTALL_COMMAND: &str = "winget install OpenJS.NodeJS";
 const GIT_TUNA_LATEST_RELEASE_URL: &str =
@@ -35,6 +40,12 @@ const KIMI_TARGET_PYTHON_VERSION: &str = "3.13";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GitInstallSource {
+    Official,
+    Tuna,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WingetInstallSource {
     Official,
     Tuna,
 }
@@ -278,10 +289,24 @@ fn parse_git_install_source(value: Option<String>) -> GitInstallSource {
     }
 }
 
+fn parse_winget_install_source(value: Option<String>) -> WingetInstallSource {
+    match value.as_deref() {
+        Some("tuna") => WingetInstallSource::Tuna,
+        _ => WingetInstallSource::Official,
+    }
+}
+
 fn git_install_source_label(source: GitInstallSource) -> &'static str {
     match source {
         GitInstallSource::Official => "官方源",
         GitInstallSource::Tuna => "清华源",
+    }
+}
+
+fn winget_install_source_label(source: WingetInstallSource) -> &'static str {
+    match source {
+        WingetInstallSource::Official => "官方源",
+        WingetInstallSource::Tuna => "清华源",
     }
 }
 
@@ -347,6 +372,48 @@ fn build_prereq_install_command(
     Some(script_parts.join("; "))
 }
 
+fn build_winget_tuna_bootstrap_command() -> String {
+    [
+        "$ErrorActionPreference='Stop'",
+        &format!("$wingetTunaLatestReleaseUrl = '{WINGET_TUNA_LATEST_RELEASE_URL}'"),
+        "$baseUri = [System.Uri]$wingetTunaLatestReleaseUrl",
+        "$tunaPage = Invoke-WebRequest -Uri $wingetTunaLatestReleaseUrl -TimeoutSec 45 -ErrorAction Stop",
+        "$tunaLinks = @($tunaPage.Links | Where-Object { $_.href })",
+        "$bundleHref = $tunaLinks | ForEach-Object { $_.href } | Where-Object { $_ -match '(?i)Microsoft\\.DesktopAppInstaller_.*_8wekyb3d8bbwe\\.msixbundle$' } | Select-Object -First 1",
+        "if (-not $bundleHref) { throw 'tuna latest release page does not contain winget bundle link' }",
+        "$tunaBundleUrl = [System.Uri]::new($baseUri, $bundleHref).AbsoluteUri",
+        "$wingetBundlePath = Join-Path $env:TEMP 'Microsoft.DesktopAppInstaller.msixbundle'",
+        "Invoke-WebRequest -Uri $tunaBundleUrl -OutFile $wingetBundlePath -TimeoutSec 180 -MaximumRedirection 8 -ErrorAction Stop",
+        "if (-not (Test-Path $wingetBundlePath)) { throw 'winget package missing after tuna download' }",
+    ]
+    .join("; ")
+}
+
+fn build_winget_bootstrap_command(source: WingetInstallSource) -> String {
+    let download_script = match source {
+        WingetInstallSource::Official => [
+            &format!("$wingetBootstrapUrl = '{WINGET_BOOTSTRAP_URL}'"),
+            "$wingetBundlePath = Join-Path $env:TEMP 'Microsoft.DesktopAppInstaller.msixbundle'",
+            "Invoke-WebRequest -Uri $wingetBootstrapUrl -OutFile $wingetBundlePath -TimeoutSec 180 -MaximumRedirection 8 -ErrorAction Stop",
+            "if (-not (Test-Path $wingetBundlePath)) { throw 'winget package missing after official download' }",
+        ]
+        .join("; "),
+        WingetInstallSource::Tuna => build_winget_tuna_bootstrap_command(),
+    };
+
+    [
+        "$ErrorActionPreference='Stop'",
+        "$wingetCmd = Get-Command winget -ErrorAction SilentlyContinue",
+        "if ($wingetCmd) { Write-Host 'winget already installed'; exit 0 }",
+        &download_script,
+        "Add-AppxPackage -Path $wingetBundlePath -ErrorAction Stop",
+        "$wingetCmd = Get-Command winget -ErrorAction SilentlyContinue",
+        "if (-not $wingetCmd) { throw 'winget not found after installation' }",
+        "Write-Host 'winget installation finished'",
+    ]
+    .join("; ")
+}
+
 fn build_install_script(install_command: &str) -> String {
     format!(
         "$ErrorActionPreference='Continue'; {install_command}; Write-Host ''; Write-Host '安装命令已执行，请在该终端确认结果。'"
@@ -373,6 +440,61 @@ fn open_url_in_system_browser(url: &str) -> Result<(), String> {
         .spawn()
         .map_err(|error| format!("拉起系统浏览器失败: {error}"))?;
     Ok(())
+}
+
+fn summarize_action_result(result: &ActionResult) -> String {
+    let mut summary = format!("[{}] {}", result.code, result.message);
+    if let Some(detail) = result.detail.as_ref() {
+        if !detail.trim().is_empty() {
+            summary.push_str(": ");
+            summary.push_str(detail);
+        }
+    }
+    summary
+}
+
+fn aggregate_unregister_cleanup_result(
+    unregister_result: ActionResult,
+    cleanup_result: ActionResult,
+) -> ActionResult {
+    if cleanup_result.ok && unregister_result.ok {
+        return ActionResult {
+            ok: true,
+            code: "unregister_cleanup_done".to_string(),
+            message: "一键反注册清理完成".to_string(),
+            detail: cleanup_result
+                .detail
+                .or(unregister_result.detail)
+                .filter(|detail| !detail.trim().is_empty()),
+        };
+    }
+
+    if cleanup_result.ok && !unregister_result.ok {
+        let detail = [summarize_action_result(&unregister_result)]
+            .join("\n")
+            .trim()
+            .to_string();
+        return ActionResult {
+            ok: true,
+            code: "unregister_cleanup_partial".to_string(),
+            message: "应用数据已清理，但反注册未完成".to_string(),
+            detail: if detail.is_empty() { None } else { Some(detail) },
+        };
+    }
+
+    let detail = [
+        summarize_action_result(&unregister_result),
+        summarize_action_result(&cleanup_result),
+    ]
+    .join("\n")
+    .trim()
+    .to_string();
+    ActionResult {
+        ok: false,
+        code: "unregister_cleanup_failed".to_string(),
+        message: "一键反注册清理失败".to_string(),
+        detail: if detail.is_empty() { None } else { Some(detail) },
+    }
 }
 
 fn launch_elevated_powershell_install(command: &str) -> Result<String, String> {
@@ -879,6 +1001,37 @@ pub fn launch_prereq_install(git_source: Option<String>) -> ActionResult {
 }
 
 #[tauri::command]
+pub fn launch_winget_install(source: Option<String>) -> ActionResult {
+    let prereq = get_install_prereq_status();
+    if prereq.winget {
+        return ActionResult::ok_with_code("winget_already_installed", "已检测到 winget，无需安装。");
+    }
+
+    let parsed_source = parse_winget_install_source(source);
+    let source_label = winget_install_source_label(parsed_source);
+    let command = build_winget_bootstrap_command(parsed_source);
+    match launch_elevated_powershell_install(&command) {
+        Ok(output) => {
+            logging::log_line(&format!(
+                "[prereq-install] winget install terminal started source={} command={} output={}",
+                source_label, command, output
+            ));
+            ActionResult {
+                ok: true,
+                code: "winget_install_launch_started".to_string(),
+                message: format!("已启动 winget 管理员安装终端（{}），完成后将自动复检。", source_label),
+                detail: Some(format!("{command}; {output}")),
+            }
+        }
+        Err(error) => ActionResult::err(
+            "winget_install_launch_failed",
+            "启动 winget 安装失败",
+            error,
+        ),
+    }
+}
+
+#[tauri::command]
 pub fn launch_git_install() -> ActionResult {
     let prereq = get_install_prereq_status();
     if prereq.git {
@@ -1279,8 +1432,157 @@ pub fn open_nodejs_download_page() -> ActionResult {
 }
 
 #[tauri::command]
+pub fn open_winget_install_page() -> ActionResult {
+    if !is_allowed_docs_url(WINGET_STORE_URL) {
+        return ActionResult::err(
+            "docs_domain_not_allowed",
+            "打开页面失败",
+            format!("文档域名不在白名单中: {WINGET_STORE_URL}"),
+        );
+    }
+
+    match open_url_in_system_browser(WINGET_STORE_URL) {
+        Ok(_) => ActionResult {
+            ok: true,
+            code: "open_winget_page_started".to_string(),
+            message: "已通过系统浏览器打开 winget 官方安装页面".to_string(),
+            detail: Some(WINGET_STORE_URL.to_string()),
+        },
+        Err(error) => ActionResult::err("open_winget_page_failed", "打开页面失败", error),
+    }
+}
+
+#[tauri::command]
 pub fn ensure_nilesoft_installed(app: AppHandle) -> Result<InstallStatus, String> {
     nilesoft_install::ensure_installed(&app)
+}
+
+#[tauri::command]
+pub fn one_click_install_repair(app: AppHandle, config: AppConfig) -> ActionResult {
+    logging::log_line("[one-click-maintenance] start");
+    let normalized = prepare_config_for_save(config, state::load_app_config().runtime);
+    let mut detail_lines: Vec<String> = Vec::new();
+
+    logging::log_line("[one-click-maintenance] stage=install begin");
+    let mut install_state = match nilesoft_install::ensure_installed(&app) {
+        Ok(state) => {
+            detail_lines.push(format!("[install] {}", state.message));
+            logging::log_line(&format!(
+                "[one-click-maintenance] stage=install done installed={} registered={} needs_elevation={}",
+                state.installed, state.registered, state.needs_elevation
+            ));
+            state
+        }
+        Err(error) => {
+            logging::log_line(&format!(
+                "[one-click-maintenance] stage=install failed error={error}"
+            ));
+            return ActionResult::err(
+                "maintenance_install_failed",
+                "一键维护失败：安装/修复阶段失败",
+                format!("安装/修复阶段失败: {error}"),
+            )
+        }
+    };
+
+    if !install_state.registered || install_state.needs_elevation {
+        logging::log_line("[one-click-maintenance] stage=register begin");
+        let elevated = request_elevation_and_register();
+        detail_lines.push(format!("[register] {}", summarize_action_result(&elevated)));
+        if !elevated.ok {
+            logging::log_line(&format!(
+                "[one-click-maintenance] stage=register failed code={} message={}",
+                elevated.code, elevated.message
+            ));
+            return ActionResult {
+                ok: false,
+                code: "maintenance_register_incomplete".to_string(),
+                message: "一键维护失败：提权注册失败".to_string(),
+                detail: Some(detail_lines.join("\n")),
+            };
+        }
+        install_state = nilesoft_install::inspect_installation();
+        detail_lines.push(format!("[recheck] {}", install_state.message));
+        logging::log_line(&format!(
+            "[one-click-maintenance] stage=recheck installed={} registered={} needs_elevation={}",
+            install_state.installed, install_state.registered, install_state.needs_elevation
+        ));
+    }
+
+    if !install_state.installed || !install_state.registered || install_state.needs_elevation {
+        detail_lines.push(format!(
+            "[recheck] installed={} registered={} needs_elevation={}",
+            install_state.installed, install_state.registered, install_state.needs_elevation
+        ));
+        logging::log_line("[one-click-maintenance] stage=recheck failed status inconsistent");
+        return ActionResult {
+            ok: false,
+            code: "maintenance_register_incomplete".to_string(),
+            message: "一键维护未完成".to_string(),
+            detail: Some(detail_lines.join("\n")),
+        };
+    }
+
+    logging::log_line("[one-click-maintenance] stage=apply begin");
+    let apply_result = apply_config(normalized.clone());
+    detail_lines.push(format!("[apply] {}", summarize_action_result(&apply_result)));
+    if apply_result.ok {
+        logging::log_line("[one-click-maintenance] stage=apply done, stage=activate begin");
+        let activate_result = activate_now();
+        detail_lines.push(format!(
+            "[activate] {}",
+            summarize_action_result(&activate_result)
+        ));
+        if activate_result.ok {
+            logging::log_line("[one-click-maintenance] stage=activate done, finish=success");
+            return ActionResult {
+                ok: true,
+                code: "maintenance_done".to_string(),
+                message: "一键维护完成（检测 / 安装 / 注册 / 修复）".to_string(),
+                detail: Some(detail_lines.join("\n")),
+            };
+        }
+    }
+
+    logging::log_line("[one-click-maintenance] stage=fallback_hkcu begin");
+    let fallback_result = repair_context_menu_hkcu(normalized);
+    detail_lines.push(format!(
+        "[fallback_hkcu] {}",
+        summarize_action_result(&fallback_result)
+    ));
+    if !fallback_result.ok {
+        logging::log_line("[one-click-maintenance] stage=fallback_hkcu failed");
+        return ActionResult {
+            ok: false,
+            code: "maintenance_menu_sync_failed".to_string(),
+            message: "一键维护失败：菜单同步失败".to_string(),
+            detail: Some(detail_lines.join("\n")),
+        };
+    }
+
+    logging::log_line("[one-click-maintenance] stage=refresh_explorer begin");
+    let refresh_result = refresh_explorer();
+    detail_lines.push(format!(
+        "[refresh_explorer] {}",
+        summarize_action_result(&refresh_result)
+    ));
+    if !refresh_result.ok {
+        logging::log_line("[one-click-maintenance] stage=refresh_explorer failed");
+        return ActionResult {
+            ok: false,
+            code: "maintenance_menu_sync_failed".to_string(),
+            message: "一键维护失败：菜单同步失败".to_string(),
+            detail: Some(detail_lines.join("\n")),
+        };
+    }
+
+    logging::log_line("[one-click-maintenance] finish=success_with_hkcu_fallback");
+    ActionResult {
+        ok: true,
+        code: "maintenance_done".to_string(),
+        message: "一键维护完成（检测 / 安装 / 注册 / 修复）".to_string(),
+        detail: Some(detail_lines.join("\n")),
+    }
 }
 
 #[tauri::command]
@@ -1429,6 +1731,21 @@ pub fn cleanup_app_data(confirm_token: Option<String>) -> ActionResult {
         .collect::<Vec<_>>()
         .join("；");
     ActionResult::ok_with_code("cleanup_done", format!("已清理应用数据目录：{removed}"))
+}
+
+#[tauri::command]
+pub fn one_click_unregister_cleanup(confirm_token: Option<String>) -> ActionResult {
+    if confirm_token.as_deref() != Some(CLEANUP_CONFIRM_TOKEN) {
+        return ActionResult::err(
+            "cleanup_confirm_required",
+            "清理应用数据需要二次确认",
+            "请在确认后重试。",
+        );
+    }
+
+    let unregister_result = attempt_unregister_nilesoft();
+    let cleanup_result = cleanup_app_data(confirm_token);
+    aggregate_unregister_cleanup_result(unregister_result, cleanup_result)
 }
 
 #[tauri::command]
@@ -1715,6 +2032,15 @@ mod tests {
     use super::*;
     use crate::state::{AppConfig, RuntimeState};
 
+    fn result(ok: bool, code: &str, message: &str, detail: Option<&str>) -> ActionResult {
+        ActionResult {
+            ok,
+            code: code.to_string(),
+            message: message.to_string(),
+            detail: detail.map(str::to_string),
+        }
+    }
+
     #[test]
     fn should_preserve_runtime_state_when_preparing_config() {
         let mut incoming = AppConfig::default();
@@ -1739,6 +2065,44 @@ mod tests {
         let result = cleanup_app_data(None);
         assert!(!result.ok);
         assert_eq!(result.code, "cleanup_confirm_required");
+    }
+
+    #[test]
+    fn should_aggregate_unregister_cleanup_done() {
+        let unregister = result(true, "unregister_done", "反注册完成", Some("u ok"));
+        let cleanup = result(true, "cleanup_done", "清理完成", Some("c ok"));
+        let merged = aggregate_unregister_cleanup_result(unregister, cleanup);
+        assert!(merged.ok);
+        assert_eq!(merged.code, "unregister_cleanup_done");
+        assert_eq!(merged.message, "一键反注册清理完成");
+        assert_eq!(merged.detail.as_deref(), Some("c ok"));
+    }
+
+    #[test]
+    fn should_aggregate_unregister_cleanup_partial_when_cleanup_ok() {
+        let unregister = result(false, "unregister_failed", "反注册失败", Some("need admin"));
+        let cleanup = result(true, "cleanup_done", "清理完成", Some("c ok"));
+        let merged = aggregate_unregister_cleanup_result(unregister, cleanup);
+        assert!(merged.ok);
+        assert_eq!(merged.code, "unregister_cleanup_partial");
+        assert_eq!(merged.message, "应用数据已清理，但反注册未完成");
+        let detail = merged.detail.unwrap_or_default();
+        assert!(detail.contains("[unregister_failed] 反注册失败"));
+        assert!(detail.contains("need admin"));
+    }
+
+    #[test]
+    fn should_aggregate_unregister_cleanup_failed_when_cleanup_failed() {
+        let unregister = result(true, "unregister_done", "反注册完成", Some("u ok"));
+        let cleanup = result(false, "cleanup_failed", "清理失败", Some("access denied"));
+        let merged = aggregate_unregister_cleanup_result(unregister, cleanup);
+        assert!(!merged.ok);
+        assert_eq!(merged.code, "unregister_cleanup_failed");
+        assert_eq!(merged.message, "一键反注册清理失败");
+        let detail = merged.detail.unwrap_or_default();
+        assert!(detail.contains("[unregister_done] 反注册完成"));
+        assert!(detail.contains("[cleanup_failed] 清理失败"));
+        assert!(detail.contains("access denied"));
     }
 
     #[test]
@@ -1769,6 +2133,26 @@ mod tests {
     }
 
     #[test]
+    fn should_parse_winget_install_source() {
+        assert_eq!(
+            parse_winget_install_source(Some("tuna".to_string())),
+            WingetInstallSource::Tuna
+        );
+        assert_eq!(
+            parse_winget_install_source(Some("official".to_string())),
+            WingetInstallSource::Official
+        );
+        assert_eq!(
+            parse_winget_install_source(Some("unexpected".to_string())),
+            WingetInstallSource::Official
+        );
+        assert_eq!(
+            parse_winget_install_source(None),
+            WingetInstallSource::Official
+        );
+    }
+
+    #[test]
     fn should_build_official_git_only_prereq_command() {
         let command =
             build_prereq_install_command(true, false, GitInstallSource::Official).expect("command");
@@ -1794,6 +2178,28 @@ mod tests {
     fn should_skip_prereq_command_when_everything_exists() {
         let command = build_prereq_install_command(false, false, GitInstallSource::Official);
         assert!(command.is_none());
+    }
+
+    #[test]
+    fn should_build_official_winget_bootstrap_command() {
+        let command = build_winget_bootstrap_command(WingetInstallSource::Official);
+        assert!(command.contains("Get-Command winget"));
+        assert!(command.contains("https://aka.ms/getwinget"));
+        assert!(!command.contains("github-release/microsoft/winget-cli/LatestRelease/"));
+        assert!(!command.contains("$tunaPage.Links"));
+        assert!(command.contains("Add-AppxPackage"));
+        assert!(command.contains("winget not found after installation"));
+    }
+
+    #[test]
+    fn should_build_tuna_winget_bootstrap_command() {
+        let command = build_winget_bootstrap_command(WingetInstallSource::Tuna);
+        assert!(command.contains("github-release/microsoft/winget-cli/LatestRelease/"));
+        assert!(command.contains("$tunaPage.Links"));
+        assert!(command.contains("Microsoft\\.DesktopAppInstaller_.*_8wekyb3d8bbwe\\.msixbundle"));
+        assert!(command.contains("Add-AppxPackage"));
+        assert!(command.contains("winget not found after installation"));
+        assert!(!command.contains("https://aka.ms/getwinget"));
     }
 
     #[test]

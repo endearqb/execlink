@@ -6,6 +6,7 @@ import type {
   CliStatusMap,
   DiagnosticsInfo,
   GitInstallSource,
+  WingetInstallSource,
   CliKey,
   HkcuMenuGroup,
   InstallLaunchRequest,
@@ -48,6 +49,10 @@ export function ensureNilesoftInstalled() {
   return invokeTauri<InstallStatus>("ensure_nilesoft_installed");
 }
 
+export function oneClickInstallRepair(config: AppConfig) {
+  return invokeTauri<ActionResult>("one_click_install_repair", { config });
+}
+
 export function requestElevationAndRegister() {
   return invokeTauri<ActionResult>("request_elevation_and_register");
 }
@@ -58,6 +63,10 @@ export function attemptUnregisterNilesoft() {
 
 export function cleanupAppData(confirmToken?: string) {
   return invokeTauri<ActionResult>("cleanup_app_data", { confirmToken });
+}
+
+export function oneClickUnregisterCleanup(confirmToken?: string) {
+  return invokeTauri<ActionResult>("one_click_unregister_cleanup", { confirmToken });
 }
 
 export function applyConfig(config: AppConfig) {
@@ -110,6 +119,14 @@ export function openInstallDocs(key: CliKey) {
 
 export function openNodejsDownloadPage() {
   return invokeTauri<ActionResult>("open_nodejs_download_page");
+}
+
+export function openWingetInstallPage() {
+  return invokeTauri<ActionResult>("open_winget_install_page");
+}
+
+export function launchWingetInstall(source?: WingetInstallSource) {
+  return invokeTauri<ActionResult>("launch_winget_install", { source });
 }
 
 export function launchGitInstall() {

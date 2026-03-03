@@ -15,7 +15,11 @@ import {
   listContextMenuGroupsHkcu,
   launchCliAuth,
   launchPrereqInstall,
+  launchWingetInstall,
+  oneClickInstallRepair,
+  oneClickUnregisterCleanup,
   openNodejsDownloadPage,
+  openWingetInstallPage,
   openInstallDocs,
   refreshExplorer,
   removeContextMenuHkcu,
@@ -32,6 +36,7 @@ import {
 import { CliConfigTable } from "../components/CliConfigTable";
 import { AppConfirmDialog } from "../components/AppConfirmDialog";
 import { GitInstallSourceDialog } from "../components/GitInstallSourceDialog";
+import { WingetInstallSourceDialog } from "../components/WingetInstallSourceDialog";
 import { QuickSetupWizard } from "../components/QuickSetupWizard";
 import { UsageGuideDialog } from "../components/UsageGuideDialog";
 import { ToggleRow } from "../components/ToggleRow";
@@ -105,6 +110,7 @@ const APP_VERSION = __APP_VERSION__;
 const GITHUB_REPO_URL = "https://github.com/endearqb/execlink";
 const INSTALL_RECHECK_INTERVAL_MS = 2000;
 const INSTALL_RECHECK_TIMEOUT_MS = 10 * 60 * 1000;
+const WINGET_INSTALL_RECHECK_TIMEOUT_MS = 3 * 60 * 1000;
 const OUTSET_LARGE = "shadow-[6px_6px_12px_#d5d0c4,-6px_-6px_12px_#ffffff]";
 const OUTSET_SMALL = "shadow-[3px_3px_6px_#d5d0c4,-3px_-3px_6px_#ffffff]";
 const INSET_SMALL = "shadow-[inset_2px_2px_4px_#d5d0c4,inset_-2px_-2px_4px_#ffffff]";
@@ -144,6 +150,12 @@ const MIRROR_PROBE_CONNECT_TIMEOUT_SEC = 3;
 const MIRROR_PROBE_MAX_TIME_SEC = 8;
 const MIRROR_PROBE_TIMEOUT_MS = 20 * 1000;
 const PYTHON_RUNTIME_CHECK_TIMEOUT_MS = 15 * 1000;
+const MAINTENANCE_FAILURE_CODES = new Set([
+  "maintenance_failed",
+  "maintenance_install_failed",
+  "maintenance_register_incomplete",
+  "maintenance_menu_sync_failed"
+]);
 
 type InstallLaunchMode = "official" | "mirror";
 
@@ -159,6 +171,9 @@ interface InstallLaunchOptions {
   skipRiskConfirm?: boolean;
   fromMirrorFallback?: boolean;
 }
+
+type WingetInstallEntry = "prereq" | "install" | "quick_setup";
+type WingetInstallMethod = "official" | "store";
 
 const EMPTY_QUICK_SETUP: QuickSetupStatus = {
   key: null,
@@ -177,8 +192,28 @@ interface ConfirmDialogState {
   danger: boolean;
 }
 
+interface MaintenanceDetailDialogState {
+  open: boolean;
+  title: string;
+  message: string;
+}
+
 function isKimiMirrorInstallKey(key: CliKey) {
   return key === "kimi" || key === "kimi_web";
+}
+
+function wingetInstallEntryLabel(entry: WingetInstallEntry) {
+  if (entry === "prereq") {
+    return "前置环境安装";
+  }
+  if (entry === "quick_setup") {
+    return "快速安装向导";
+  }
+  return "CLI 安装";
+}
+
+function wingetInstallMethodLabel(method: WingetInstallMethod) {
+  return method === "store" ? "微软商店手动下载" : "官方源下载";
 }
 
 function normalizeLockedConfig(config: AppConfig): AppConfig {
@@ -383,6 +418,7 @@ export function HomePage() {
   const [windowBusy, setWindowBusy] = useState(false);
   const [usageGuideOpen, setUsageGuideOpen] = useState(false);
   const [gitSourceDialogOpen, setGitSourceDialogOpen] = useState(false);
+  const [wingetSourceDialogOpen, setWingetSourceDialogOpen] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>({
     open: false,
     title: "",
@@ -390,6 +426,11 @@ export function HomePage() {
     confirmText: "确认",
     cancelText: "取消",
     danger: false
+  });
+  const [maintenanceDetailDialog, setMaintenanceDetailDialog] = useState<MaintenanceDetailDialogState>({
+    open: false,
+    title: "",
+    message: ""
   });
   const installPollTimerRef = useRef<number | null>(null);
   const terminalAutoCloseTimerRef = useRef<number | null>(null);
@@ -401,6 +442,7 @@ export function HomePage() {
   const terminalUnlistenRef = useRef<UnlistenFn[]>([]);
   const confirmResolveRef = useRef<((accepted: boolean) => void) | null>(null);
   const gitSourceResolveRef = useRef<((source: GitInstallSource | null) => void) | null>(null);
+  const wingetSourceResolveRef = useRef<((source: WingetInstallMethod | null) => void) | null>(null);
   const toastManager = Toast.useToastManager();
   const toastAddRef = useRef(toastManager.add);
   const configRef = useRef(config);
@@ -553,6 +595,22 @@ export function HomePage() {
     }
   }, []);
 
+  const closeMaintenanceDetailDialog = useCallback(() => {
+    setMaintenanceDetailDialog((prev) => ({
+      ...prev,
+      open: false
+    }));
+  }, []);
+
+  const settleWingetSourceDialog = useCallback((source: WingetInstallMethod | null) => {
+    const resolver = wingetSourceResolveRef.current;
+    wingetSourceResolveRef.current = null;
+    setWingetSourceDialogOpen(false);
+    if (resolver) {
+      resolver(source);
+    }
+  }, []);
+
   const requestConfirm = useCallback(
     (options: {
       title: string;
@@ -600,11 +658,31 @@ export function HomePage() {
     });
   }, []);
 
+  const requestWingetInstallMethod = useCallback(() => {
+    if (wingetSourceResolveRef.current) {
+      wingetSourceResolveRef.current(null);
+      wingetSourceResolveRef.current = null;
+    }
+    return new Promise<WingetInstallMethod | null>((resolve) => {
+      wingetSourceResolveRef.current = resolve;
+      setWingetSourceDialogOpen(true);
+    });
+  }, []);
+
   useEffect(() => {
     return () => {
       if (gitSourceResolveRef.current) {
         gitSourceResolveRef.current(null);
         gitSourceResolveRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (wingetSourceResolveRef.current) {
+        wingetSourceResolveRef.current(null);
+        wingetSourceResolveRef.current = null;
       }
     };
   }, []);
@@ -712,6 +790,110 @@ export function HomePage() {
       setWorking(false);
     }
   }, []);
+
+  const promptOpenWingetInstallPage = useCallback(
+    async (reason: string) => {
+      const shouldOpen = await requestConfirm({
+        title: "打开 winget 官方安装页",
+        message: [
+          reason,
+          "",
+          "是否打开 Microsoft Store 安装页手动安装 winget？",
+          "https://apps.microsoft.com/detail/9NBLGGH4NNS1"
+        ].join("\n"),
+        confirmText: "打开安装页",
+        cancelText: "稍后处理"
+      });
+      if (!shouldOpen) {
+        return;
+      }
+      const openResult = await openWingetInstallPage();
+      setLastResult(openResult);
+    },
+    [requestConfirm]
+  );
+
+  const ensureWingetBeforeCliInstall = useCallback(
+    async (entry: WingetInstallEntry): Promise<boolean> => {
+      const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+      const entryLabel = wingetInstallEntryLabel(entry);
+      try {
+        const prereq = await getInstallPrereqStatus();
+        setInstallPrereq(prereq);
+        if (prereq.winget) {
+          return true;
+        }
+
+        const selectedMethod = await requestWingetInstallMethod();
+        if (!selectedMethod) {
+          setLastResult({
+            ok: false,
+            code: "winget_install_cancelled",
+            message: "已取消 winget 安装",
+            detail: `入口：${entryLabel}`
+          });
+          return false;
+        }
+
+        const methodLabel = wingetInstallMethodLabel(selectedMethod);
+        if (selectedMethod === "store") {
+          const openResult = await openWingetInstallPage();
+          if (!openResult.ok) {
+            setLastResult(openResult);
+            return false;
+          }
+          setLastResult({
+            ok: false,
+            code: "winget_install_manual_required",
+            message: "请先在微软商店完成 winget 安装后重试。",
+            detail: `入口：${entryLabel}；安装方式：${methodLabel}\n${openResult.detail ?? ""}`.trim()
+          });
+          return false;
+        }
+
+        const launchResult = await launchWingetInstall("official");
+        setLastResult(launchResult);
+        if (!launchResult.ok) {
+          await promptOpenWingetInstallPage(`winget ${methodLabel}启动失败。`);
+          return false;
+        }
+
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < WINGET_INSTALL_RECHECK_TIMEOUT_MS) {
+          await wait(INSTALL_RECHECK_INTERVAL_MS);
+          const next = await getInstallPrereqStatus();
+          setInstallPrereq(next);
+          if (next.winget) {
+            setLastResult({
+              ok: true,
+              code: "winget_install_ready",
+              message: "已检测到 winget，继续执行安装流程。",
+              detail: `入口：${entryLabel}；安装方式：${methodLabel}`
+            });
+            return true;
+          }
+        }
+
+        setLastResult({
+          ok: false,
+          code: "winget_install_verify_timeout",
+          message: "winget 安装后复检超时",
+          detail: "未在预期时间内检测到 winget，请确认安装窗口已完成并重试。"
+        });
+        await promptOpenWingetInstallPage(`未在预期时间内检测到 winget（安装方式：${methodLabel}）。`);
+        return false;
+      } catch (error) {
+        setLastResult({
+          ok: false,
+          code: "winget_install_exception",
+          message: "winget 前置检查失败",
+          detail: String(error)
+        });
+        return false;
+      }
+    },
+    [promptOpenWingetInstallPage, requestWingetInstallMethod]
+  );
 
   const clearTerminalAutoCloseTimer = useCallback(() => {
     if (terminalAutoCloseTimerRef.current !== null) {
@@ -1155,68 +1337,13 @@ export function HomePage() {
   }, [applyMenuConfigWithFallback, refreshInitialState]);
 
   const onOneClickMaintenance = useCallback(async () => {
-    setWorking(true);
-    try {
-      const [detected, prereq] = await Promise.all([detectClis(), getInstallPrereqStatus()]);
-      setStatuses(detected);
-      setInstallPrereq(prereq);
-
-      let installState = await ensureNilesoftInstalled();
-      setInstall(installState);
-
-      if (!installState.registered || installState.needs_elevation) {
-        const elevateResult = await requestElevationAndRegister();
-        if (!elevateResult.ok) {
-          setLastResult({
-            ...elevateResult,
-            message: "一键维护失败：提权注册失败"
-          });
-          return;
-        }
-        installState = await ensureNilesoftInstalled();
-        setInstall(installState);
-      }
-
-      if (!installState.installed || !installState.registered || installState.needs_elevation) {
-        setLastResult({
-          ok: false,
-          code: "maintenance_register_incomplete",
-          message: "一键维护未完成",
-          detail: installState.message
-        });
-        return;
-      }
-
-      const payload = normalizeLockedConfig({
-        ...configRef.current,
-        cli_order: normalizeCliOrder(configRef.current.cli_order)
-      });
-      setConfig(payload);
-
-      const syncResult = await applyMenuConfigWithFallback(payload, "register");
-      if (!syncResult.ok) {
-        setLastResult(syncResult);
-        return;
-      }
-
-      await refreshInitialState();
-      setLastResult({
-        ok: true,
-        code: "maintenance_done",
-        message: "一键维护完成（检测 / 安装 / 注册 / 修复）",
-        detail: syncResult.detail ?? installState.message
-      });
-    } catch (error) {
-      setLastResult({
-        ok: false,
-        code: "maintenance_failed",
-        message: "一键维护失败",
-        detail: String(error)
-      });
-    } finally {
-      setWorking(false);
-    }
-  }, [applyMenuConfigWithFallback, refreshInitialState]);
+    const payload = normalizeLockedConfig({
+      ...configRef.current,
+      cli_order: normalizeCliOrder(configRef.current.cli_order)
+    });
+    await runAction(() => oneClickInstallRepair(payload));
+    await refreshInitialState();
+  }, [refreshInitialState, runAction]);
 
   const onDetect = useCallback(async () => {
     setWorking(true);
@@ -1319,8 +1446,14 @@ export function HomePage() {
   }, [runAction]);
 
   const onLaunchPrereqInstall = useCallback(async () => {
-    const needsGit = !installPrereq.git;
-    const needsNode = !installPrereq.node;
+    const wingetReady = await ensureWingetBeforeCliInstall("prereq");
+    if (!wingetReady) {
+      return;
+    }
+
+    const prereq = await getInstallPrereqStatus();
+    setInstallPrereq(prereq);
+    const needsGit = !prereq.git;
 
     let gitSource: GitInstallSource | undefined;
     if (needsGit) {
@@ -1338,7 +1471,7 @@ export function HomePage() {
     }
 
     await runAction(() => launchPrereqInstall(gitSource));
-  }, [installPrereq.git, installPrereq.node, requestGitInstallSource, runAction]);
+  }, [ensureWingetBeforeCliInstall, requestGitInstallSource, runAction]);
 
   const launchInstall = useCallback(
     async (key: CliKey, options?: InstallLaunchOptions) => {
@@ -1365,14 +1498,22 @@ export function HomePage() {
         return;
       }
 
+      const wingetReady = await ensureWingetBeforeCliInstall("install");
+      if (!wingetReady) {
+        return;
+      }
+
+      const prereq = await getInstallPrereqStatus();
+      setInstallPrereq(prereq);
+
       const precheckLines = [
-        `Git: ${installPrereq.git ? "✅" : "❌"}`,
-        `Node.js: ${installPrereq.node ? "✅" : "❌"}`,
-        `npm: ${installPrereq.npm ? "✅" : "❌"}`,
-        `uv: ${installPrereq.uv ? "✅" : "❌"}`,
-        `pwsh: ${installPrereq.pwsh ? "✅" : "❌"}`,
-        `winget: ${installPrereq.winget ? "✅" : "❌"}`,
-        `WSL: ${installPrereq.wsl ? "✅" : "❌"}`
+        `Git: ${prereq.git ? "✅" : "❌"}`,
+        `Node.js: ${prereq.node ? "✅" : "❌"}`,
+        `npm: ${prereq.npm ? "✅" : "❌"}`,
+        `uv: ${prereq.uv ? "✅" : "❌"}`,
+        `pwsh: ${prereq.pwsh ? "✅" : "❌"}`,
+        `winget: ${prereq.winget ? "✅" : "❌"}`,
+        `WSL: ${prereq.wsl ? "✅" : "❌"}`
       ];
 
       const effectiveInstallCommand = buildInstallCommandForMode(key, hint.install_command, mode);
@@ -1476,15 +1617,9 @@ export function HomePage() {
     },
     [
       clearTerminalAutoCloseTimer,
+      ensureWingetBeforeCliInstall,
       emitTerminalScriptPreview,
       installHints,
-      installPrereq.git,
-      installPrereq.node,
-      installPrereq.npm,
-      installPrereq.uv,
-      installPrereq.pwsh,
-      installPrereq.winget,
-      installPrereq.wsl,
       requestConfirm,
       startInstallRecheck
     ]
@@ -1712,6 +1847,19 @@ export function HomePage() {
         message: "正在准备快速安装向导...",
         detail: null
       });
+
+      setQuickPhase("precheck", "检查 winget 前置环境...");
+      const wingetReady = await ensureWingetBeforeCliInstall("quick_setup");
+      if (!wingetReady) {
+        setQuickSetup({
+          key,
+          phase: "failed",
+          running: false,
+          message: "缺少 winget 前置环境",
+          detail: "请先完成 winget 安装后重试快速安装向导。"
+        });
+        return;
+      }
 
       const readyResult = await terminalEnsureSession();
       if (!readyResult.ok) {
@@ -2443,6 +2591,7 @@ export function HomePage() {
       runTerminalCommandsSequentially,
       runTerminalScriptAndWait,
       scheduleTerminalAutoClose,
+      ensureWingetBeforeCliInstall,
       setQuickPhase,
       verifyKimiInstallation
     ]
@@ -2557,67 +2706,9 @@ export function HomePage() {
       });
       return;
     }
-
-    const asRuntimeError = (code: string, message: string, error: unknown): ActionResult => ({
-      ok: false,
-      code,
-      message,
-      detail: String(error)
-    });
-
-    setWorking(true);
-    try {
-      let unregisterResult: ActionResult;
-      try {
-        unregisterResult = await attemptUnregisterNilesoft();
-      } catch (error) {
-        unregisterResult = asRuntimeError("unregister_runtime_exception", "反注册执行失败", error);
-      }
-
-      let cleanupResult: ActionResult;
-      try {
-        cleanupResult = await cleanupAppData(CLEANUP_CONFIRM_TOKEN);
-      } catch (error) {
-        cleanupResult = asRuntimeError("cleanup_runtime_exception", "清理应用数据失败", error);
-      }
-
-      await refreshInitialState();
-
-      if (cleanupResult.ok && unregisterResult.ok) {
-        setLastResult({
-          ok: true,
-          code: "unregister_cleanup_done",
-          message: "一键反注册清理完成",
-          detail: cleanupResult.detail ?? unregisterResult.detail ?? null
-        });
-        return;
-      }
-
-      if (cleanupResult.ok && !unregisterResult.ok) {
-        setLastResult({
-          ok: true,
-          code: "unregister_cleanup_partial",
-          message: "应用数据已清理，但反注册未完成",
-          detail: [`[${unregisterResult.code}] ${unregisterResult.message}`, unregisterResult.detail]
-            .filter(Boolean)
-            .join("\n")
-        });
-        return;
-      }
-
-      setLastResult({
-        ok: false,
-        code: "unregister_cleanup_failed",
-        message: "一键反注册清理失败",
-        detail: [
-          `[${unregisterResult.code}] ${unregisterResult.message}${unregisterResult.detail ? `: ${unregisterResult.detail}` : ""}`,
-          `[${cleanupResult.code}] ${cleanupResult.message}${cleanupResult.detail ? `: ${cleanupResult.detail}` : ""}`
-        ].join("\n")
-      });
-    } finally {
-      setWorking(false);
-    }
-  }, [refreshInitialState, requestConfirm]);
+    await runAction(() => oneClickUnregisterCleanup(CLEANUP_CONFIRM_TOKEN));
+    await refreshInitialState();
+  }, [refreshInitialState, requestConfirm, runAction]);
 
   const onRepairMenuFallback = useCallback(async () => {
     const payload = normalizeLockedConfig({
@@ -2819,15 +2910,39 @@ export function HomePage() {
       return;
     }
 
+    const isMaintenanceFailure =
+      !lastResult.ok &&
+      MAINTENANCE_FAILURE_CODES.has(lastResult.code);
+
+    if (isMaintenanceFailure) {
+      const detailLines = [
+        `错误码: [${lastResult.code}]`,
+        `错误信息: ${lastResult.message}`,
+        ""
+      ];
+      if (lastResult.detail && lastResult.detail.trim().length > 0) {
+        detailLines.push(lastResult.detail);
+      } else {
+        detailLines.push("未返回更多细节，请查看运行日志。");
+      }
+      setMaintenanceDetailDialog({
+        open: true,
+        title: "一键维护失败详情",
+        message: detailLines.join("\n")
+      });
+    }
+
     toastAddRef.current({
       type: lastResult.ok ? "success" : "error",
       priority: lastResult.ok ? "low" : "high",
-      timeout: lastResult.ok ? 2600 : 4500,
+      timeout: lastResult.ok ? 2600 : 10000,
       title: lastResult.message,
       description: (
         <div className="grid gap-1">
           <span className="font-mono text-[11px] text-[var(--ui-muted)]">[{lastResult.code}]</span>
-          {lastResult.detail ? (
+          {isMaintenanceFailure ? (
+            <span className="text-xs text-[var(--ui-muted)]">详情弹窗已自动打开。</span>
+          ) : lastResult.detail ? (
             <details className="text-xs">
               <summary className="cursor-pointer select-none text-[var(--ui-text)]">详情</summary>
               <pre className="mt-1.5 text-[11px]">{lastResult.detail}</pre>
@@ -3183,6 +3298,13 @@ export function HomePage() {
         onCancel={() => settleGitSourceDialog(null)}
       />
 
+      <WingetInstallSourceDialog
+        open={wingetSourceDialogOpen}
+        onSelectOfficial={() => settleWingetSourceDialog("official")}
+        onSelectStore={() => settleWingetSourceDialog("store")}
+        onCancel={() => settleWingetSourceDialog(null)}
+      />
+
       <AppConfirmDialog
         open={confirmDialog.open}
         title={confirmDialog.title}
@@ -3192,6 +3314,17 @@ export function HomePage() {
         danger={confirmDialog.danger}
         onConfirm={() => settleConfirmDialog(true)}
         onCancel={() => settleConfirmDialog(false)}
+      />
+
+      <AppConfirmDialog
+        open={maintenanceDetailDialog.open}
+        title={maintenanceDetailDialog.title}
+        message={maintenanceDetailDialog.message}
+        confirmText="知道了"
+        cancelText="关闭"
+        danger
+        onConfirm={closeMaintenanceDetailDialog}
+        onCancel={closeMaintenanceDetailDialog}
       />
 
       <UsageGuideDialog open={usageGuideOpen} onClose={() => setUsageGuideOpen(false)} />

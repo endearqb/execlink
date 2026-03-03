@@ -176,6 +176,7 @@ export interface InstallPrereqStatus {
 }
 
 export type GitInstallSource = "official" | "tuna";
+export type WingetInstallSource = "official" | "tuna";
 
 export interface InstallLaunchRequest {
   key: CliKey;

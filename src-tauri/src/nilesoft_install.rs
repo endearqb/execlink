@@ -229,6 +229,83 @@ fn ensure_registration_points_to(shell_exe: &Path) -> AppResult<()> {
     ))
 }
 
+fn merge_copy_dir_recursive_skip_existing(src: &Path, dest: &Path) -> AppResult<()> {
+    fs::create_dir_all(dest).map_err(|e| format!("创建目录失败: {e}"))?;
+    let entries = fs::read_dir(src).map_err(|e| format!("读取目录失败: {e}"))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("读取目录项失败: {e}"))?;
+        let src_path = entry.path();
+        let dest_path = dest.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("读取文件类型失败: {e}"))?;
+        if file_type.is_dir() {
+            merge_copy_dir_recursive_skip_existing(&src_path, &dest_path)?;
+            continue;
+        }
+
+        if dest_path.exists() {
+            continue;
+        }
+
+        fs::copy(&src_path, &dest_path).map_err(|e| {
+            format!(
+                "复制缺失文件失败 ({} -> {}): {e}",
+                src_path.display(),
+                dest_path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn recover_install_root_from_source(source_root: &Path, target_root: &Path) -> AppResult<()> {
+    let source_norm = normalize_path_for_compare(source_root);
+    let target_norm = normalize_path_for_compare(target_root);
+    if source_norm == target_norm {
+        return Err("恢复安装目录失败：源目录与目标目录相同".to_string());
+    }
+
+    if !source_root.exists() {
+        return Err(format!("恢复安装目录失败：源目录不存在 ({})", source_root.display()));
+    }
+    if find_shell_exe(source_root).is_none() {
+        return Err(format!(
+            "恢复安装目录失败：源目录未检测到 shell.exe ({})",
+            source_root.display()
+        ));
+    }
+
+    // Avoid deleting/replacing files in target root because shell.dll may be loaded by Explorer
+    // and locked (os error 32). We only backfill missing files.
+    merge_copy_dir_recursive_skip_existing(source_root, target_root)?;
+    if find_shell_exe(target_root).is_none() {
+        return Err(format!(
+            "恢复安装目录失败：复制后目标目录仍未检测到 shell.exe ({})",
+            target_root.display()
+        ));
+    }
+    Ok(())
+}
+
+fn try_recover_install_root_from_registered_root(target_root: &Path) -> AppResult<bool> {
+    let Some(registered_root) = registered_shell_root_dir() else {
+        return Ok(false);
+    };
+
+    logging::log_line(&format!(
+        "[install] detected registered root candidate for recovery: {}",
+        registered_root.display()
+    ));
+    recover_install_root_from_source(&registered_root, target_root)?;
+    logging::log_line(&format!(
+        "[install] recovered install root from registered root: {} -> {}",
+        registered_root.display(),
+        target_root.display()
+    ));
+    Ok(true)
+}
+
 fn unzip_to_dir(zip_path: &Path, target: &Path) -> AppResult<()> {
     logging::log_line(&format!("[install] extracting zip: {}", zip_path.display()));
 
@@ -495,8 +572,34 @@ pub fn ensure_installed(app: &AppHandle) -> AppResult<InstallStatus> {
     fs::create_dir_all(&root).map_err(|e| format!("创建安装目录失败: {e}"))?;
 
     if find_shell_exe(&root).is_none() {
-        let zip = resolve_resource_zip(app)?;
-        unzip_to_dir(&zip, &root)?;
+        let install_result = (|| -> AppResult<()> {
+            let zip = resolve_resource_zip(app)?;
+            unzip_to_dir(&zip, &root)?;
+            Ok(())
+        })();
+
+        if let Err(install_error) = install_result {
+            logging::log_line(&format!(
+                "[install] package installation failed, trying recovery from registered root: {install_error}"
+            ));
+            match try_recover_install_root_from_registered_root(&root) {
+                Ok(true) => {
+                    logging::log_line(
+                        "[install] install recovery completed from registered root, continue registration flow",
+                    );
+                }
+                Ok(false) => {
+                    return Err(format!(
+                        "安装/修复失败，且未找到可恢复的系统注册目录。原始错误: {install_error}"
+                    ));
+                }
+                Err(recover_error) => {
+                    return Err(format!(
+                        "安装/修复失败。原始错误: {install_error}; 自动恢复失败: {recover_error}"
+                    ));
+                }
+            }
+        }
     }
 
     write_marker(&root)?;
@@ -538,6 +641,15 @@ pub fn ensure_installed(app: &AppHandle) -> AppResult<InstallStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("execlink-{prefix}-{nanos}"))
+    }
 
     fn sample_register_state(attempted: bool, registered: bool, detail: Option<&str>) -> RegisterState {
         RegisterState {
@@ -598,5 +710,60 @@ mod tests {
         assert!(status.installed);
         assert!(!status.registered);
         assert!(status.needs_elevation);
+    }
+
+    #[test]
+    fn should_recover_install_root_from_source() {
+        let source_root = temp_dir("recover-src");
+        let target_root = temp_dir("recover-dst");
+        let source_nested = source_root.join("nested");
+        let source_shell = source_root.join("shell.exe");
+        let source_conf = source_nested.join("shell.nss");
+
+        fs::create_dir_all(&source_nested).expect("create source nested");
+        fs::write(&source_shell, b"shell").expect("write shell");
+        fs::write(&source_conf, b"config").expect("write config");
+
+        recover_install_root_from_source(&source_root, &target_root).expect("recover from source");
+
+        assert!(target_root.join("shell.exe").exists());
+        assert!(target_root.join("nested").join("shell.nss").exists());
+
+        let _ = fs::remove_dir_all(&source_root);
+        let _ = fs::remove_dir_all(&target_root);
+    }
+
+    #[test]
+    fn should_fail_recover_when_source_and_target_are_same() {
+        let root = temp_dir("recover-same");
+        fs::create_dir_all(&root).expect("create root");
+        fs::write(root.join("shell.exe"), b"shell").expect("write shell");
+
+        let error = recover_install_root_from_source(&root, &root).expect_err("should fail on same path");
+        assert!(error.contains("源目录与目标目录相同"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn should_not_overwrite_existing_files_when_recovering() {
+        let source_root = temp_dir("recover-noswap-src");
+        let target_root = temp_dir("recover-noswap-dst");
+        fs::create_dir_all(&source_root).expect("create source");
+        fs::create_dir_all(&target_root).expect("create target");
+
+        fs::write(source_root.join("shell.exe"), b"source-shell").expect("write source shell");
+        fs::write(source_root.join("shell.dll"), b"source-dll").expect("write source dll");
+        fs::write(target_root.join("shell.dll"), b"target-dll").expect("write target dll");
+
+        recover_install_root_from_source(&source_root, &target_root).expect("recover");
+
+        let shell_exe = fs::read(target_root.join("shell.exe")).expect("read shell exe");
+        let shell_dll = fs::read(target_root.join("shell.dll")).expect("read shell dll");
+        assert_eq!(shell_exe, b"source-shell");
+        assert_eq!(shell_dll, b"target-dll");
+
+        let _ = fs::remove_dir_all(&source_root);
+        let _ = fs::remove_dir_all(&target_root);
     }
 }
