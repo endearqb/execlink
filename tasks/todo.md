@@ -1,3 +1,24 @@
+# 2026-03-03 更新安装文档（README + install_kimi）
+
+## 计划清单
+- [x] 更新 README：补全依赖说明、推荐顺序、CLI 安装命令与 Kimi/Python 说明
+- [x] 新增 `install_kimi.md`：沉淀 winget、Git for Windows、Kimi 官方/镜像完整流程与命令
+- [x] 校对文档命令与当前实现一致（`commands.rs` / `Home.tsx`）
+- [x] 回填执行记录与回顾
+
+## 执行记录
+- 已创建任务清单，准备执行文档更新。
+- 已更新 `README.md`：
+- 新增“安装依赖（Windows）”“推荐安装顺序”“依赖安装命令”“CLI 安装命令总览”。
+- 明确 `winget` 前置检测、Microsoft Store 推荐链接、Kimi 通过 `uv` 安装并涉及 Python 3.13、以及“仅保留 Python 可卸载 kimi-cli”。
+- 已新增 `install_kimi.md`：
+- 沉淀 `winget` 检测与安装、Git for Windows 官方源/清华源完整流程命令。
+- 沉淀 Kimi 官方源与镜像源完整流程（含 uv 引导、Python 3.13、镜像探测与失败策略）。
+- 已按当前实现校对关键命令常量：`winget`、`Git`、`Node.js`、`Kimi` 及各 CLI 安装命令。
+
+## 回顾
+- 安装文档应优先以代码中的命令常量为唯一真源，README 放摘要与主命令，复杂流程沉淀到独立文档可降低维护成本。
+
 # 2026-03-03 推送代码并更新 Release 说明（winget 检测 + 微软商店推荐）
 
 ## 计划清单
