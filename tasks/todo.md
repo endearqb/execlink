@@ -1,16 +1,20 @@
 # 2026-03-03 推送代码并更新 Release 说明（winget 检测 + 微软商店推荐）
 
 ## 计划清单
-- [ ] 梳理当前改动并确认待推送分支与远端状态
-- [ ] 提交本地改动并执行 `git push`
-- [ ] 更新 GitHub Release 说明：增加 winget 检测提示与微软商店下载推荐
-- [ ] 复核远端提交与 Release 说明已生效
+- [x] 梳理当前改动并确认待推送分支与远端状态
+- [x] 提交本地改动并执行 `git push`
+- [x] 更新 GitHub Release 说明：增加 winget 检测提示与微软商店下载推荐
+- [x] 复核远端提交与 Release 说明已生效
 
 ## 执行记录
 - 已创建本次推送与发布说明更新任务清单，准备执行。
+- 本地改动已提交：`a1fd62c feat: improve maintenance flow and winget prerequisite handling`。
+- 代码已推送：`main -> origin/main`。
+- 已创建并发布 Release：`v0.2.7`（https://github.com/endearqb/execlink/releases/tag/v0.2.7）。
+- Release 说明已增加：安装前置 `winget` 检测、缺失/失败时推荐通过 Microsoft Store 安装 App Installer（winget）。
 
 ## 回顾
-- 待完成后补充。
+- 推送流程中网络连通存在间歇性波动，关键发布动作（tag/release）需要在失败后快速重试并验证结果。
 
 # 2026-03-03 shell.dll 占用导致恢复失败修复（os error 32）
 
