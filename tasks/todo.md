@@ -420,3 +420,36 @@
 - 一键流程下沉到后端后，前端状态管理明显简化，错误码和文案来源也更一致。
 - 对破坏性操作（反注册+清理）做后端聚合比前端拼接更稳健，测试覆盖更直接。
 - 对 Nilesoft 现阶段应坚持“外部依赖 + 强治理”而非源码接管，收益/成本比更合理。
+
+# 2026-03-04 Home.tsx upstream manual merge-back
+
+## Plan Checklist
+- [x] Re-introduce upstream winget prerequisite flow in Home.tsx while keeping npm mirror/PATH/PS1 enhancements.
+- [x] Re-introduce upstream one-click backend orchestration usage for maintenance and unregister cleanup.
+- [x] Re-introduce maintenance failure detail dialog + toast behavior + winget source dialog rendering.
+- [x] Build and verify (`npm run build`) and summarize merged behavior.
+
+## Execution Log
+- Started diff-based manual merge from `origin/main` into current `src/pages/Home.tsx`.
+- Reintroduced winget-source prompt and prerequisite guard (`ensureWingetBeforeCliInstall`) for prereq install, per-CLI install, and quick setup flows.
+- Preserved current npm registry source popup logic and PS1 policy auto-fix logic while wiring upstream winget guard into the same flow.
+- Switched one-click maintenance/unregister flows back to backend orchestrator commands (`oneClickInstallRepair`, `oneClickUnregisterCleanup`).
+- Restored maintenance failure detail dialog behavior and toast linkage (maintenance failures auto-open detail dialog, error toast timeout back to 10s).
+- Restored `<WingetInstallSourceDialog />` rendering while keeping `<NpmRegistrySourceDialog />` and user PATH repair features.
+- Verified with `npm run build` (tsc + vite build passed).
+
+## Review
+- Upstream regression risk in `Home.tsx` conflict area has been addressed by explicitly restoring all missing winget and maintenance-dialog segments.
+- Current local enhancements (npm mirror chooser, PATH remediation, PS1 policy remediation) remain intact after merge-back.
+- Next safety step is an in-app click-through smoke test for three paths: header prereq install, single CLI install, and quick setup.
+
+# 2026-03-05 版本 +0.0.1 与发布
+
+## Plan Checklist
+- [ ] Bump patch version by +0.0.1 and sync all version manifests.
+- [ ] Commit current Home.tsx merge-back + version changes, then push to origin/main.
+- [ ] Build installers (MSI + NSIS) with tauri build and verify artifacts.
+- [ ] Publish GitHub Release with new tag and attach installer artifacts.
+
+## Execution Log
+- Initialized release workflow for patch bump, git push, package build, and GitHub release publish.
