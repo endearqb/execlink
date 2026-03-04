@@ -446,10 +446,23 @@
 # 2026-03-05 版本 +0.0.1 与发布
 
 ## Plan Checklist
-- [ ] Bump patch version by +0.0.1 and sync all version manifests.
-- [ ] Commit current Home.tsx merge-back + version changes, then push to origin/main.
-- [ ] Build installers (MSI + NSIS) with tauri build and verify artifacts.
-- [ ] Publish GitHub Release with new tag and attach installer artifacts.
+- [x] Bump patch version by +0.0.1 and sync all version manifests.
+- [x] Commit current Home.tsx merge-back + version changes, then push to origin/main.
+- [x] Build installers (MSI + NSIS) with tauri build and verify artifacts.
+- [x] Publish GitHub Release with new tag and attach installer artifacts.
 
 ## Execution Log
 - Initialized release workflow for patch bump, git push, package build, and GitHub release publish.
+- Executed `npm run bump:patch`, version updated to `0.2.8`, and synced to `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, `src-tauri/wix/main.wxs`.
+- Verified frontend build via `npm run build` (passed).
+- Committed and pushed `Home.tsx` merge-back + version updates to `origin/main` (`749d44d`).
+- Built installers via `npm run tauri -- build`; generated:
+- `src-tauri/target/release/bundle/msi/ExecLink_0.2.8_x64_zh-CN.msi`
+- `src-tauri/target/release/bundle/nsis/ExecLink_0.2.8_x64-setup.exe`
+- Synced `src-tauri/Cargo.lock` package version to `0.2.8`, committed and pushed (`f8b3cdb`).
+- Published GitHub Release `v0.2.8` and uploaded both installer artifacts.
+- Release URL: https://github.com/endearqb/execlink/releases/tag/v0.2.8
+
+## Review
+- Patch release workflow completed end-to-end: version bump, git push, package build, and release publish are consistent.
+- Release now points to latest pushed commit and includes both Windows installer formats.
