@@ -387,6 +387,15 @@ pub struct CliInstallHint {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct CliUserPathStatus {
+    pub key: String,
+    pub command_dir: Option<String>,
+    pub needs_user_path_fix: bool,
+    pub add_user_path_command: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct InstallPrereqStatus {
     pub git: bool,
     pub node: bool,
@@ -395,6 +404,14 @@ pub struct InstallPrereqStatus {
     pub pwsh: bool,
     pub winget: bool,
     pub wsl: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PowerShellPs1PolicyStatus {
+    pub blocked: bool,
+    pub effective_policy: String,
+    pub fix_command: String,
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -165,6 +165,16 @@ export interface CliInstallHint {
 
 export type CliInstallHintMap = Record<string, CliInstallHint>;
 
+export interface CliUserPathStatus {
+  key: CliKey;
+  command_dir?: string | null;
+  needs_user_path_fix: boolean;
+  add_user_path_command?: string | null;
+  message: string;
+}
+
+export type CliUserPathStatusMap = Record<string, CliUserPathStatus>;
+
 export interface InstallPrereqStatus {
   git: boolean;
   node: boolean;
@@ -173,6 +183,13 @@ export interface InstallPrereqStatus {
   pwsh: boolean;
   winget: boolean;
   wsl: boolean;
+}
+
+export interface PowerShellPs1PolicyStatus {
+  blocked: boolean;
+  effective_policy: string;
+  fix_command: string;
+  detail?: string | null;
 }
 
 export type GitInstallSource = "official" | "tuna";

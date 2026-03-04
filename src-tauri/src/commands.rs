@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashSet},
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -11,8 +11,8 @@ use tauri::AppHandle;
 use crate::{
     detect, embedded_terminal, explorer, logging, nilesoft, nilesoft_install, process_util, terminal,
     state::{
-        self, ActionResult, AppConfig, CliInstallHint, CliStatusMap, DiagnosticsInfo, InitialState,
-        InstallLaunchRequest, InstallPrereqStatus, InstallStatus,
+        self, ActionResult, AppConfig, CliInstallHint, CliStatusMap, CliUserPathStatus, DiagnosticsInfo,
+        InitialState, InstallLaunchRequest, InstallPrereqStatus, InstallStatus, PowerShellPs1PolicyStatus,
     },
 };
 
@@ -37,6 +37,8 @@ const NODEJS_WINGET_INSTALL_COMMAND: &str = "winget install OpenJS.NodeJS";
 const GIT_TUNA_LATEST_RELEASE_URL: &str =
     "https://mirrors.tuna.tsinghua.edu.cn/github-release/git-for-windows/git/LatestRelease/";
 const KIMI_TARGET_PYTHON_VERSION: &str = "3.13";
+const PS1_POLICY_FIX_COMMAND: &str =
+    "Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GitInstallSource {
@@ -86,17 +88,17 @@ const CLI_INSTALL_PROFILES: [CliInstallProfile; 7] = [
     CliInstallProfile {
         key: "claude",
         display_name: "Claude Code",
-        install_command: "irm https://claude.ai/install.ps1 | iex",
-        upgrade_command: Some("claude update"),
-        uninstall_command: r#"Remove-Item -Path "$env:USERPROFILE\.local\bin\claude.exe" -Force -ErrorAction SilentlyContinue; Remove-Item -Path "$env:USERPROFILE\.local\share\claude" -Recurse -Force -ErrorAction SilentlyContinue"#,
+        install_command: "npm install -g @anthropic-ai/claude-code",
+        upgrade_command: Some("npm install -g @anthropic-ai/claude-code@latest"),
+        uninstall_command: "npm uninstall -g @anthropic-ai/claude-code",
         auth_command: Some("claude"),
         verify_command: Some("claude --version"),
         requires_oauth: false,
         docs_url: "https://code.claude.com/docs/en/quickstart",
         official_domain: "claude.ai",
         publisher: "Anthropic",
-        risk_remote_script: true,
-        requires_node: false,
+        risk_remote_script: false,
+        requires_node: true,
         wsl_recommended: false,
     },
     CliInstallProfile {
@@ -599,6 +601,150 @@ fn resolve_kimi_executable_path() -> Option<PathBuf> {
         .find(|path| path.exists())
 }
 
+fn cli_lookup_names_for_key(key: &str) -> Vec<&'static str> {
+    match key {
+        "claude" => vec!["claude"],
+        "codex" => vec!["codex"],
+        "gemini" => vec!["gemini"],
+        "kimi" | "kimi_web" => vec!["kimi"],
+        "qwencode" => vec!["qwen", "qwencode"],
+        "opencode" => vec!["opencode"],
+        _ => Vec::new(),
+    }
+}
+
+fn where_command_paths(command_name: &str, path_env: Option<&str>) -> Vec<PathBuf> {
+    let mut command = process_util::command_hidden("where.exe");
+    command.arg(command_name);
+    if let Some(path_value) = path_env {
+        command.env("PATH", path_value);
+    }
+
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(_) => return Vec::new(),
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+fn resolve_cli_command_dir(key: &str) -> Option<PathBuf> {
+    let refreshed_path = process_util::refreshed_path_env();
+    let path_ref = refreshed_path.as_deref();
+    for command_name in cli_lookup_names_for_key(key) {
+        for command_path in where_command_paths(command_name, path_ref) {
+            if let Some(parent) = command_path.parent() {
+                return Some(parent.to_path_buf());
+            }
+        }
+    }
+
+    if matches!(key, "kimi" | "kimi_web") {
+        return resolve_kimi_executable_path().and_then(|path| path.parent().map(|p| p.to_path_buf()));
+    }
+    None
+}
+
+fn read_user_path_env() -> Option<String> {
+    let script = "$value=[Environment]::GetEnvironmentVariable('Path','User'); if ($value) { [Environment]::ExpandEnvironmentVariables($value) }";
+    run_powershell_script(script)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_windows_path_for_compare(path: &str) -> String {
+    let mut normalized = path
+        .trim()
+        .trim_matches('"')
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    while normalized.len() > 3 && normalized.ends_with('\\') {
+        normalized.pop();
+    }
+    normalized
+}
+
+fn user_path_contains_dir(user_path: Option<&str>, command_dir: &Path) -> bool {
+    let Some(user_path_value) = user_path else {
+        return false;
+    };
+    let target = normalize_windows_path_for_compare(command_dir.to_string_lossy().as_ref());
+    user_path_value.split(';').any(|segment| {
+        normalize_windows_path_for_compare(segment) == target
+    })
+}
+
+fn build_add_user_path_command(command_dir: &Path) -> String {
+    let escaped_dir = escape_ps_single_quoted(command_dir.to_string_lossy().as_ref());
+    [
+        format!("$targetDir = '{escaped_dir}'"),
+        "$currentUserPath = [Environment]::GetEnvironmentVariable('Path','User')".to_string(),
+        "$segments = @()".to_string(),
+        "if (-not [string]::IsNullOrWhiteSpace($currentUserPath)) { $segments = @($currentUserPath -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }".to_string(),
+        "$exists = $segments | Where-Object { $_ -ieq $targetDir } | Select-Object -First 1".to_string(),
+        "if ($exists) { Write-Output 'unchanged'; return }".to_string(),
+        "$nextUserPath = if ([string]::IsNullOrWhiteSpace($currentUserPath)) { $targetDir } else { \"$currentUserPath;$targetDir\" }".to_string(),
+        "[Environment]::SetEnvironmentVariable('Path', $nextUserPath, 'User')".to_string(),
+        "Write-Output $nextUserPath".to_string(),
+    ]
+    .join("; ")
+}
+
+fn build_cli_user_path_status(key: &str, user_path: Option<&str>) -> CliUserPathStatus {
+    let Some(command_dir) = resolve_cli_command_dir(key) else {
+        return CliUserPathStatus {
+            key: key.to_string(),
+            command_dir: None,
+            needs_user_path_fix: false,
+            add_user_path_command: None,
+            message: "CLI command path is unavailable. Install or detect the CLI first.".to_string(),
+        };
+    };
+
+    let in_user_path = user_path_contains_dir(user_path, &command_dir);
+    let command_text = command_dir.to_string_lossy().to_string();
+    CliUserPathStatus {
+        key: key.to_string(),
+        command_dir: Some(command_text.clone()),
+        needs_user_path_fix: !in_user_path,
+        add_user_path_command: if in_user_path {
+            None
+        } else {
+            Some(build_add_user_path_command(&command_dir))
+        },
+        message: if in_user_path {
+            format!("User PATH already contains {command_text}.")
+        } else {
+            format!("User PATH is missing {command_text}.")
+        },
+    }
+}
+
+fn detect_powershell_effective_policy() -> Result<String, String> {
+    run_powershell_script("Get-ExecutionPolicy")
+        .map(|value| {
+            let trimmed = value.trim().to_string();
+            if trimmed.is_empty() {
+                "Unknown".to_string()
+            } else {
+                trimmed
+            }
+        })
+}
+
+fn is_ps1_policy_blocked(policy: &str) -> bool {
+    policy.eq_ignore_ascii_case("Restricted")
+}
+
 fn cli_command_for_key(key: &str) -> Option<&'static str> {
     match key {
         "claude" => Some("claude"),
@@ -921,6 +1067,134 @@ pub fn get_install_prereq_status() -> InstallPrereqStatus {
         pwsh: detect::command_exists_with_path("pwsh", path_ref),
         winget: detect::command_exists_with_path("winget", path_ref),
         wsl: detect::command_exists_with_path("wsl", path_ref),
+    }
+}
+
+#[tauri::command]
+pub fn get_cli_user_path_statuses() -> BTreeMap<String, CliUserPathStatus> {
+    let user_path = read_user_path_env();
+    let mut statuses = BTreeMap::new();
+    for profile in CLI_INSTALL_PROFILES {
+        let key = profile.key.to_string();
+        statuses.insert(key.clone(), build_cli_user_path_status(&key, user_path.as_deref()));
+    }
+    statuses
+}
+
+#[tauri::command]
+pub fn add_cli_command_dir_to_user_path(key: String) -> ActionResult {
+    let Some(profile) = find_cli_install_profile(&key) else {
+        return ActionResult::err(
+            "install_profile_missing",
+            "Join user PATH failed",
+            format!("Unsupported CLI key: {key}"),
+        );
+    };
+
+    let Some(command_dir) = resolve_cli_command_dir(&key) else {
+        return ActionResult::err(
+            "cli_command_dir_missing",
+            "Join user PATH failed",
+            format!(
+                "{} command path is unavailable. Install and detect the CLI first.",
+                profile.display_name
+            ),
+        );
+    };
+
+    let user_path = read_user_path_env();
+    if user_path_contains_dir(user_path.as_deref(), &command_dir) {
+        return ActionResult {
+            ok: true,
+            code: "user_path_already_contains_dir".to_string(),
+            message: format!(
+                "{} command directory is already in user PATH.",
+                profile.display_name
+            ),
+            detail: Some(command_dir.display().to_string()),
+        };
+    }
+
+    let add_command = build_add_user_path_command(&command_dir);
+    match run_powershell_script(&add_command) {
+        Ok(output) => {
+            logging::log_line(&format!(
+                "[install-assist] add user PATH key={} dir={} output={}",
+                key,
+                command_dir.display(),
+                output
+            ));
+            ActionResult {
+                ok: true,
+                code: "user_path_updated".to_string(),
+                message: format!(
+                    "{} command directory was added to user PATH.",
+                    profile.display_name
+                ),
+                detail: Some(format!(
+                    "command={}\ndir={}\noutput={}",
+                    add_command,
+                    command_dir.display(),
+                    output
+                )),
+            }
+        }
+        Err(error) => ActionResult::err("user_path_update_failed", "Join user PATH failed", error),
+    }
+}
+
+#[tauri::command]
+pub fn get_powershell_ps1_policy_status() -> PowerShellPs1PolicyStatus {
+    match detect_powershell_effective_policy() {
+        Ok(policy) => PowerShellPs1PolicyStatus {
+            blocked: is_ps1_policy_blocked(&policy),
+            effective_policy: policy,
+            fix_command: PS1_POLICY_FIX_COMMAND.to_string(),
+            detail: None,
+        },
+        Err(error) => PowerShellPs1PolicyStatus {
+            blocked: true,
+            effective_policy: "Unknown".to_string(),
+            fix_command: PS1_POLICY_FIX_COMMAND.to_string(),
+            detail: Some(error),
+        },
+    }
+}
+
+#[tauri::command]
+pub fn fix_powershell_ps1_policy() -> ActionResult {
+    match run_powershell_script(PS1_POLICY_FIX_COMMAND) {
+        Ok(output) => {
+            let status = get_powershell_ps1_policy_status();
+            if status.blocked {
+                return ActionResult::err(
+                    "ps1_policy_still_blocked",
+                    "PowerShell policy repair failed",
+                    format!(
+                        "Fix command executed but effective policy is still {}. detail={}",
+                        status.effective_policy,
+                        status.detail.unwrap_or_else(|| "none".to_string())
+                    ),
+                );
+            }
+            ActionResult {
+                ok: true,
+                code: "ps1_policy_repaired".to_string(),
+                message: format!(
+                    "PowerShell script policy repaired: {}.",
+                    status.effective_policy
+                ),
+                detail: Some(format!(
+                    "command={}\noutput={}",
+                    PS1_POLICY_FIX_COMMAND, output
+                )),
+            }
+        }
+        Err(error) => ActionResult::err(
+            "ps1_policy_repair_failed",
+            "PowerShell policy repair failed",
+            error,
+        ),
     }
 }
 
@@ -2207,6 +2481,27 @@ mod tests {
         let hints = get_cli_install_hints();
         assert!(hints.contains_key("qwencode"));
         assert!(hints.contains_key("opencode"));
+    }
+
+    #[test]
+    fn should_use_npm_commands_for_claude_profile() {
+        let hints = get_cli_install_hints();
+        let claude = hints.get("claude").expect("claude hint");
+        assert_eq!(claude.install_command, "npm install -g @anthropic-ai/claude-code");
+        assert_eq!(
+            claude.upgrade_command.as_deref(),
+            Some("npm install -g @anthropic-ai/claude-code@latest")
+        );
+        assert_eq!(claude.uninstall_command, "npm uninstall -g @anthropic-ai/claude-code");
+        assert!(claude.requires_node);
+        assert!(!claude.risk_remote_script);
+    }
+
+    #[test]
+    fn should_build_user_path_append_command() {
+        let command = build_add_user_path_command(Path::new(r"C:\Users\tester\AppData\Roaming\npm"));
+        assert!(command.contains("SetEnvironmentVariable('Path'"));
+        assert!(command.contains("C:\\Users\\tester\\AppData\\Roaming\\npm"));
     }
 
     #[test]

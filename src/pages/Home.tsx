@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, type Window as TauriWindow } from "@tauri-apps/api/window";
 import {
+  addCliCommandDirToUserPath,
   activateNow,
   applyConfig,
   attemptUnregisterNilesoft,
@@ -10,16 +11,15 @@ import {
   detectClis,
   ensureNilesoftInstalled,
   getCliInstallHints,
+  getCliUserPathStatuses,
   getInitialState,
   getInstallPrereqStatus,
+  getPowershellPs1PolicyStatus,
   listContextMenuGroupsHkcu,
   launchCliAuth,
   launchPrereqInstall,
-  launchWingetInstall,
-  oneClickInstallRepair,
-  oneClickUnregisterCleanup,
+  fixPowershellPs1Policy,
   openNodejsDownloadPage,
-  openWingetInstallPage,
   openInstallDocs,
   refreshExplorer,
   removeContextMenuHkcu,
@@ -36,7 +36,7 @@ import {
 import { CliConfigTable } from "../components/CliConfigTable";
 import { AppConfirmDialog } from "../components/AppConfirmDialog";
 import { GitInstallSourceDialog } from "../components/GitInstallSourceDialog";
-import { WingetInstallSourceDialog } from "../components/WingetInstallSourceDialog";
+import { NpmRegistrySourceDialog } from "../components/NpmRegistrySourceDialog";
 import { QuickSetupWizard } from "../components/QuickSetupWizard";
 import { UsageGuideDialog } from "../components/UsageGuideDialog";
 import { ToggleRow } from "../components/ToggleRow";
@@ -50,11 +50,13 @@ import {
   type AppConfig,
   type CliInstallHintMap,
   type CliKey,
+  type CliUserPathStatusMap,
   type CliStatusMap,
   type GitInstallSource,
   type HkcuMenuGroup,
   type InstallPrereqStatus,
   type InstallStatus,
+  type PowerShellPs1PolicyStatus,
   type QuickSetupPhase,
   type QuickSetupStatus,
   type TerminalOutputEvent,
@@ -91,6 +93,8 @@ const EMPTY_PREREQ: InstallPrereqStatus = {
   wsl: false
 };
 
+const EMPTY_CLI_USER_PATH_STATUS: CliUserPathStatusMap = {};
+
 type TabKey = "cli" | "menu";
 
 const TABS: Array<{ key: TabKey; title: string }> = [
@@ -110,7 +114,6 @@ const APP_VERSION = __APP_VERSION__;
 const GITHUB_REPO_URL = "https://github.com/endearqb/execlink";
 const INSTALL_RECHECK_INTERVAL_MS = 2000;
 const INSTALL_RECHECK_TIMEOUT_MS = 10 * 60 * 1000;
-const WINGET_INSTALL_RECHECK_TIMEOUT_MS = 3 * 60 * 1000;
 const OUTSET_LARGE = "shadow-[6px_6px_12px_#d5d0c4,-6px_-6px_12px_#ffffff]";
 const OUTSET_SMALL = "shadow-[3px_3px_6px_#d5d0c4,-3px_-3px_6px_#ffffff]";
 const INSET_SMALL = "shadow-[inset_2px_2px_4px_#d5d0c4,inset_-2px_-2px_4px_#ffffff]";
@@ -150,14 +153,10 @@ const MIRROR_PROBE_CONNECT_TIMEOUT_SEC = 3;
 const MIRROR_PROBE_MAX_TIME_SEC = 8;
 const MIRROR_PROBE_TIMEOUT_MS = 20 * 1000;
 const PYTHON_RUNTIME_CHECK_TIMEOUT_MS = 15 * 1000;
-const MAINTENANCE_FAILURE_CODES = new Set([
-  "maintenance_failed",
-  "maintenance_install_failed",
-  "maintenance_register_incomplete",
-  "maintenance_menu_sync_failed"
-]);
+const NPM_NPMMIRROR_REGISTRY_URL = "https://registry.npmmirror.com";
 
 type InstallLaunchMode = "official" | "mirror";
+type NpmRegistrySource = "official" | "npmmirror";
 
 interface InstallAttemptContext {
   key: CliKey;
@@ -167,13 +166,18 @@ interface InstallAttemptContext {
 
 interface InstallLaunchOptions {
   mode?: InstallLaunchMode;
+  npmRegistrySource?: NpmRegistrySource;
   skipPrimaryConfirm?: boolean;
   skipRiskConfirm?: boolean;
   fromMirrorFallback?: boolean;
 }
 
-type WingetInstallEntry = "prereq" | "install" | "quick_setup";
-type WingetInstallMethod = "official" | "store";
+interface NpmRegistryDialogState {
+  open: boolean;
+  title: string;
+  officialCommand: string;
+  mirrorCommand: string;
+}
 
 const EMPTY_QUICK_SETUP: QuickSetupStatus = {
   key: null,
@@ -181,6 +185,13 @@ const EMPTY_QUICK_SETUP: QuickSetupStatus = {
   running: false,
   message: "尚未开始快速安装向导。",
   detail: null
+};
+
+const EMPTY_NPM_REGISTRY_DIALOG: NpmRegistryDialogState = {
+  open: false,
+  title: "",
+  officialCommand: "",
+  mirrorCommand: ""
 };
 
 interface ConfirmDialogState {
@@ -192,28 +203,8 @@ interface ConfirmDialogState {
   danger: boolean;
 }
 
-interface MaintenanceDetailDialogState {
-  open: boolean;
-  title: string;
-  message: string;
-}
-
 function isKimiMirrorInstallKey(key: CliKey) {
   return key === "kimi" || key === "kimi_web";
-}
-
-function wingetInstallEntryLabel(entry: WingetInstallEntry) {
-  if (entry === "prereq") {
-    return "前置环境安装";
-  }
-  if (entry === "quick_setup") {
-    return "快速安装向导";
-  }
-  return "CLI 安装";
-}
-
-function wingetInstallMethodLabel(method: WingetInstallMethod) {
-  return method === "store" ? "微软商店手动下载" : "官方源下载";
 }
 
 function normalizeLockedConfig(config: AppConfig): AppConfig {
@@ -387,6 +378,35 @@ function buildInstallCommandForMode(key: CliKey, installCommand: string, mode: I
   return installCommand;
 }
 
+function shouldPromptNpmRegistry(command: string) {
+  return command
+    .split(/\r?\n/)
+    .some((line) => /\bnpm(?:\.cmd)?\s+(?:install|i)\b/i.test(line.trim()));
+}
+
+function appendNpmRegistryToCommand(command: string, registryUrl: string) {
+  return command
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!/\bnpm(?:\.cmd)?\s+(?:install|i)\b/i.test(trimmed)) {
+        return line;
+      }
+      if (/--registry(?:=|\s+)/i.test(trimmed)) {
+        return line.replace(/--registry(?:=|\s+)\S+/i, `--registry=${registryUrl}`);
+      }
+      return `${line} --registry=${registryUrl}`;
+    })
+    .join("\n");
+}
+
+function applyNpmRegistrySource(command: string, source?: NpmRegistrySource) {
+  if (source !== "npmmirror") {
+    return command;
+  }
+  return appendNpmRegistryToCommand(command, NPM_NPMMIRROR_REGISTRY_URL);
+}
+
 function hasTauriRuntime() {
   if (typeof window === "undefined") {
     return false;
@@ -405,6 +425,7 @@ export function HomePage() {
   const [config, setConfig] = useState<AppConfig>(DEFAULT_CONFIG);
   const [statuses, setStatuses] = useState<CliStatusMap>(EMPTY_STATUS);
   const [installHints, setInstallHints] = useState<CliInstallHintMap>({});
+  const [cliUserPathStatuses, setCliUserPathStatuses] = useState<CliUserPathStatusMap>(EMPTY_CLI_USER_PATH_STATUS);
   const [installPrereq, setInstallPrereq] = useState<InstallPrereqStatus>(EMPTY_PREREQ);
   const [install, setInstall] = useState<InstallStatus>(EMPTY_INSTALL);
   const [installingKey, setInstallingKey] = useState<CliKey | null>(null);
@@ -418,7 +439,7 @@ export function HomePage() {
   const [windowBusy, setWindowBusy] = useState(false);
   const [usageGuideOpen, setUsageGuideOpen] = useState(false);
   const [gitSourceDialogOpen, setGitSourceDialogOpen] = useState(false);
-  const [wingetSourceDialogOpen, setWingetSourceDialogOpen] = useState(false);
+  const [npmRegistryDialog, setNpmRegistryDialog] = useState<NpmRegistryDialogState>(EMPTY_NPM_REGISTRY_DIALOG);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>({
     open: false,
     title: "",
@@ -426,11 +447,6 @@ export function HomePage() {
     confirmText: "确认",
     cancelText: "取消",
     danger: false
-  });
-  const [maintenanceDetailDialog, setMaintenanceDetailDialog] = useState<MaintenanceDetailDialogState>({
-    open: false,
-    title: "",
-    message: ""
   });
   const installPollTimerRef = useRef<number | null>(null);
   const terminalAutoCloseTimerRef = useRef<number | null>(null);
@@ -442,7 +458,7 @@ export function HomePage() {
   const terminalUnlistenRef = useRef<UnlistenFn[]>([]);
   const confirmResolveRef = useRef<((accepted: boolean) => void) | null>(null);
   const gitSourceResolveRef = useRef<((source: GitInstallSource | null) => void) | null>(null);
-  const wingetSourceResolveRef = useRef<((source: WingetInstallMethod | null) => void) | null>(null);
+  const npmRegistryResolveRef = useRef<((source: NpmRegistrySource | null) => void) | null>(null);
   const toastManager = Toast.useToastManager();
   const toastAddRef = useRef(toastManager.add);
   const configRef = useRef(config);
@@ -595,17 +611,10 @@ export function HomePage() {
     }
   }, []);
 
-  const closeMaintenanceDetailDialog = useCallback(() => {
-    setMaintenanceDetailDialog((prev) => ({
-      ...prev,
-      open: false
-    }));
-  }, []);
-
-  const settleWingetSourceDialog = useCallback((source: WingetInstallMethod | null) => {
-    const resolver = wingetSourceResolveRef.current;
-    wingetSourceResolveRef.current = null;
-    setWingetSourceDialogOpen(false);
+  const settleNpmRegistryDialog = useCallback((source: NpmRegistrySource | null) => {
+    const resolver = npmRegistryResolveRef.current;
+    npmRegistryResolveRef.current = null;
+    setNpmRegistryDialog(EMPTY_NPM_REGISTRY_DIALOG);
     if (resolver) {
       resolver(source);
     }
@@ -658,14 +667,19 @@ export function HomePage() {
     });
   }, []);
 
-  const requestWingetInstallMethod = useCallback(() => {
-    if (wingetSourceResolveRef.current) {
-      wingetSourceResolveRef.current(null);
-      wingetSourceResolveRef.current = null;
+  const requestNpmRegistrySource = useCallback((title: string, baseCommand: string) => {
+    if (npmRegistryResolveRef.current) {
+      npmRegistryResolveRef.current(null);
+      npmRegistryResolveRef.current = null;
     }
-    return new Promise<WingetInstallMethod | null>((resolve) => {
-      wingetSourceResolveRef.current = resolve;
-      setWingetSourceDialogOpen(true);
+    return new Promise<NpmRegistrySource | null>((resolve) => {
+      npmRegistryResolveRef.current = resolve;
+      setNpmRegistryDialog({
+        open: true,
+        title,
+        officialCommand: applyNpmRegistrySource(baseCommand, "official"),
+        mirrorCommand: applyNpmRegistrySource(baseCommand, "npmmirror")
+      });
     });
   }, []);
 
@@ -680,9 +694,9 @@ export function HomePage() {
 
   useEffect(() => {
     return () => {
-      if (wingetSourceResolveRef.current) {
-        wingetSourceResolveRef.current(null);
-        wingetSourceResolveRef.current = null;
+      if (npmRegistryResolveRef.current) {
+        npmRegistryResolveRef.current(null);
+        npmRegistryResolveRef.current = null;
       }
     };
   }, []);
@@ -702,14 +716,26 @@ export function HomePage() {
     };
   }, []);
 
+  const refreshCliUserPathStatuses = useCallback(async () => {
+    try {
+      const next = await getCliUserPathStatuses();
+      setCliUserPathStatuses(next);
+      return next;
+    } catch {
+      setCliUserPathStatuses(EMPTY_CLI_USER_PATH_STATUS);
+      return EMPTY_CLI_USER_PATH_STATUS;
+    }
+  }, []);
+
   useEffect(() => {
     void (async () => {
       try {
         const state = await refreshInitialState();
 
-        const [hintResult, prereqResult] = await Promise.allSettled([
+        const [hintResult, prereqResult, cliUserPathResult] = await Promise.allSettled([
           getCliInstallHints(),
-          getInstallPrereqStatus()
+          getInstallPrereqStatus(),
+          refreshCliUserPathStatuses()
         ]);
 
         if (hintResult.status === "fulfilled") {
@@ -722,6 +748,10 @@ export function HomePage() {
           setInstallPrereq(prereqResult.value);
         } else {
           setInstallPrereq(EMPTY_PREREQ);
+        }
+
+        if (cliUserPathResult.status === "rejected") {
+          setCliUserPathStatuses(EMPTY_CLI_USER_PATH_STATUS);
         }
 
         if (!state.install_status.installed) {
@@ -749,7 +779,7 @@ export function HomePage() {
         setLoading(false);
       }
     })();
-  }, [refreshInitialState]);
+  }, [refreshCliUserPathStatuses, refreshInitialState]);
 
   const setToggle = useCallback((key: CliKey, checked: boolean) => {
     setConfig((prev) => ({
@@ -791,108 +821,76 @@ export function HomePage() {
     }
   }, []);
 
-  const promptOpenWingetInstallPage = useCallback(
-    async (reason: string) => {
-      const shouldOpen = await requestConfirm({
-        title: "打开 winget 官方安装页",
-        message: [
-          reason,
-          "",
-          "是否打开 Microsoft Store 安装页手动安装 winget？",
-          "https://apps.microsoft.com/detail/9NBLGGH4NNS1"
-        ].join("\n"),
-        confirmText: "打开安装页",
-        cancelText: "稍后处理"
-      });
-      if (!shouldOpen) {
-        return;
-      }
-      const openResult = await openWingetInstallPage();
-      setLastResult(openResult);
-    },
-    [requestConfirm]
-  );
-
-  const ensureWingetBeforeCliInstall = useCallback(
-    async (entry: WingetInstallEntry): Promise<boolean> => {
-      const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
-      const entryLabel = wingetInstallEntryLabel(entry);
+  const ensurePs1PolicyReady = useCallback(
+    async (contextTitle: string) => {
+      let status: PowerShellPs1PolicyStatus;
       try {
-        const prereq = await getInstallPrereqStatus();
-        setInstallPrereq(prereq);
-        if (prereq.winget) {
-          return true;
-        }
-
-        const selectedMethod = await requestWingetInstallMethod();
-        if (!selectedMethod) {
-          setLastResult({
-            ok: false,
-            code: "winget_install_cancelled",
-            message: "已取消 winget 安装",
-            detail: `入口：${entryLabel}`
-          });
-          return false;
-        }
-
-        const methodLabel = wingetInstallMethodLabel(selectedMethod);
-        if (selectedMethod === "store") {
-          const openResult = await openWingetInstallPage();
-          if (!openResult.ok) {
-            setLastResult(openResult);
-            return false;
-          }
-          setLastResult({
-            ok: false,
-            code: "winget_install_manual_required",
-            message: "请先在微软商店完成 winget 安装后重试。",
-            detail: `入口：${entryLabel}；安装方式：${methodLabel}\n${openResult.detail ?? ""}`.trim()
-          });
-          return false;
-        }
-
-        const launchResult = await launchWingetInstall("official");
-        setLastResult(launchResult);
-        if (!launchResult.ok) {
-          await promptOpenWingetInstallPage(`winget ${methodLabel}启动失败。`);
-          return false;
-        }
-
-        const startedAt = Date.now();
-        while (Date.now() - startedAt < WINGET_INSTALL_RECHECK_TIMEOUT_MS) {
-          await wait(INSTALL_RECHECK_INTERVAL_MS);
-          const next = await getInstallPrereqStatus();
-          setInstallPrereq(next);
-          if (next.winget) {
-            setLastResult({
-              ok: true,
-              code: "winget_install_ready",
-              message: "已检测到 winget，继续执行安装流程。",
-              detail: `入口：${entryLabel}；安装方式：${methodLabel}`
-            });
-            return true;
-          }
-        }
-
-        setLastResult({
-          ok: false,
-          code: "winget_install_verify_timeout",
-          message: "winget 安装后复检超时",
-          detail: "未在预期时间内检测到 winget，请确认安装窗口已完成并重试。"
-        });
-        await promptOpenWingetInstallPage(`未在预期时间内检测到 winget（安装方式：${methodLabel}）。`);
-        return false;
+        status = await getPowershellPs1PolicyStatus();
       } catch (error) {
         setLastResult({
           ok: false,
-          code: "winget_install_exception",
-          message: "winget 前置检查失败",
+          code: "ps1_policy_status_failed",
+          message: `${contextTitle} failed`,
           detail: String(error)
         });
         return false;
       }
+
+      if (!status.blocked) {
+        return true;
+      }
+
+      const accepted = await requestConfirm({
+        title: "PowerShell script policy is blocking .ps1",
+        message: [
+          `${contextTitle} needs PowerShell script execution permission.`,
+          `Current policy: ${status.effective_policy}`,
+          `Fix command:\n${status.fix_command}`,
+          "\nClick confirm to repair this automatically."
+        ].join("\n"),
+        confirmText: "Allow and Fix",
+        cancelText: "Cancel",
+        danger: true
+      });
+      if (!accepted) {
+        setLastResult({
+          ok: false,
+          code: "ps1_policy_fix_cancelled",
+          message: `${contextTitle} cancelled`,
+          detail: `Current policy: ${status.effective_policy}`
+        });
+        return false;
+      }
+
+      const fixResult = await runAction(fixPowershellPs1Policy);
+      if (!fixResult.ok) {
+        return false;
+      }
+
+      try {
+        const nextStatus = await getPowershellPs1PolicyStatus();
+        if (nextStatus.blocked) {
+          setLastResult({
+            ok: false,
+            code: "ps1_policy_still_blocked",
+            message: `${contextTitle} failed`,
+            detail: `Effective policy is still ${nextStatus.effective_policy}`
+          });
+          return false;
+        }
+      } catch (error) {
+        setLastResult({
+          ok: false,
+          code: "ps1_policy_status_failed",
+          message: `${contextTitle} failed`,
+          detail: String(error)
+        });
+        return false;
+      }
+
+      return true;
     },
-    [promptOpenWingetInstallPage, requestWingetInstallMethod]
+    [requestConfirm, runAction]
   );
 
   const clearTerminalAutoCloseTimer = useCallback(() => {
@@ -1173,6 +1171,7 @@ export function HomePage() {
               setWorking(true);
               try {
                 const synced = await syncMenuAfterCliChange(key, expectedDetected);
+                await refreshCliUserPathStatuses();
                 if (synced) {
                   scheduleTerminalAutoClose(3000);
                 }
@@ -1224,7 +1223,13 @@ export function HomePage() {
         })();
       }, INSTALL_RECHECK_INTERVAL_MS);
     },
-    [requestMirrorFallbackRetry, scheduleTerminalAutoClose, stopInstallPolling, syncMenuAfterCliChange]
+    [
+      refreshCliUserPathStatuses,
+      requestMirrorFallbackRetry,
+      scheduleTerminalAutoClose,
+      stopInstallPolling,
+      syncMenuAfterCliChange
+    ]
   );
 
   const onEnsureInstall = useCallback(async () => {
@@ -1337,13 +1342,68 @@ export function HomePage() {
   }, [applyMenuConfigWithFallback, refreshInitialState]);
 
   const onOneClickMaintenance = useCallback(async () => {
-    const payload = normalizeLockedConfig({
-      ...configRef.current,
-      cli_order: normalizeCliOrder(configRef.current.cli_order)
-    });
-    await runAction(() => oneClickInstallRepair(payload));
-    await refreshInitialState();
-  }, [refreshInitialState, runAction]);
+    setWorking(true);
+    try {
+      const [detected, prereq] = await Promise.all([detectClis(), getInstallPrereqStatus()]);
+      setStatuses(detected);
+      setInstallPrereq(prereq);
+
+      let installState = await ensureNilesoftInstalled();
+      setInstall(installState);
+
+      if (!installState.registered || installState.needs_elevation) {
+        const elevateResult = await requestElevationAndRegister();
+        if (!elevateResult.ok) {
+          setLastResult({
+            ...elevateResult,
+            message: "一键维护失败：提权注册失败"
+          });
+          return;
+        }
+        installState = await ensureNilesoftInstalled();
+        setInstall(installState);
+      }
+
+      if (!installState.installed || !installState.registered || installState.needs_elevation) {
+        setLastResult({
+          ok: false,
+          code: "maintenance_register_incomplete",
+          message: "一键维护未完成",
+          detail: installState.message
+        });
+        return;
+      }
+
+      const payload = normalizeLockedConfig({
+        ...configRef.current,
+        cli_order: normalizeCliOrder(configRef.current.cli_order)
+      });
+      setConfig(payload);
+
+      const syncResult = await applyMenuConfigWithFallback(payload, "register");
+      if (!syncResult.ok) {
+        setLastResult(syncResult);
+        return;
+      }
+
+      await refreshInitialState();
+      setLastResult({
+        ok: true,
+        code: "maintenance_done",
+        message: "一键维护完成（检测 / 安装 / 注册 / 修复）",
+        detail: syncResult.detail ?? installState.message
+      });
+    } catch (error) {
+      setLastResult({
+        ok: false,
+        code: "maintenance_failed",
+        message: "一键维护失败",
+        detail: String(error)
+      });
+    } finally {
+      setWorking(false);
+    }
+  }, [applyMenuConfigWithFallback, refreshInitialState]);
 
   const onDetect = useCallback(async () => {
     setWorking(true);
@@ -1351,6 +1411,7 @@ export function HomePage() {
       const [next, prereq] = await Promise.all([detectClis(), getInstallPrereqStatus()]);
       setStatuses(next);
       setInstallPrereq(prereq);
+      await refreshCliUserPathStatuses();
 
       if (
         installingKey &&
@@ -1372,7 +1433,13 @@ export function HomePage() {
     } finally {
       setWorking(false);
     }
-  }, [installingKey, scheduleTerminalAutoClose, stopInstallPolling, syncMenuAfterCliChange]);
+  }, [
+    installingKey,
+    refreshCliUserPathStatuses,
+    scheduleTerminalAutoClose,
+    stopInstallPolling,
+    syncMenuAfterCliChange
+  ]);
 
   const onCopyInstallCommand = useCallback(
     async (key: CliKey) => {
@@ -1445,15 +1512,40 @@ export function HomePage() {
     });
   }, [runAction]);
 
-  const onLaunchPrereqInstall = useCallback(async () => {
-    const wingetReady = await ensureWingetBeforeCliInstall("prereq");
-    if (!wingetReady) {
-      return;
-    }
+  const onAddCliCommandDirToUserPath = useCallback(
+    async (key: CliKey) => {
+      const status = cliUserPathStatuses[key];
+      const command = status?.add_user_path_command?.trim() ?? "";
+      if (command) {
+        const accepted = await requestConfirm({
+          title: `Add ${CLI_DEFAULT_TITLES[key]} command to user PATH`,
+          message: [`Command:\n${command}`, "\nClick confirm to execute this command."].join("\n"),
+          confirmText: "Add to PATH",
+          cancelText: "Cancel"
+        });
+        if (!accepted) {
+          setLastResult({
+            ok: false,
+            code: "user_path_fix_cancelled",
+            message: "Add to PATH cancelled",
+            detail: null
+          });
+          return;
+        }
+      }
 
-    const prereq = await getInstallPrereqStatus();
-    setInstallPrereq(prereq);
-    const needsGit = !prereq.git;
+      const result = await runAction(() => addCliCommandDirToUserPath(key));
+      if (!result.ok) {
+        return;
+      }
+      await refreshCliUserPathStatuses();
+    },
+    [cliUserPathStatuses, refreshCliUserPathStatuses, requestConfirm, runAction]
+  );
+
+  const onLaunchPrereqInstall = useCallback(async () => {
+    const needsGit = !installPrereq.git;
+    const needsNode = !installPrereq.node;
 
     let gitSource: GitInstallSource | undefined;
     if (needsGit) {
@@ -1471,7 +1563,7 @@ export function HomePage() {
     }
 
     await runAction(() => launchPrereqInstall(gitSource));
-  }, [ensureWingetBeforeCliInstall, requestGitInstallSource, runAction]);
+  }, [installPrereq.git, installPrereq.node, requestGitInstallSource, runAction]);
 
   const launchInstall = useCallback(
     async (key: CliKey, options?: InstallLaunchOptions) => {
@@ -1498,27 +1590,41 @@ export function HomePage() {
         return;
       }
 
-      const wingetReady = await ensureWingetBeforeCliInstall("install");
-      if (!wingetReady) {
-        return;
-      }
-
-      const prereq = await getInstallPrereqStatus();
-      setInstallPrereq(prereq);
-
       const precheckLines = [
-        `Git: ${prereq.git ? "✅" : "❌"}`,
-        `Node.js: ${prereq.node ? "✅" : "❌"}`,
-        `npm: ${prereq.npm ? "✅" : "❌"}`,
-        `uv: ${prereq.uv ? "✅" : "❌"}`,
-        `pwsh: ${prereq.pwsh ? "✅" : "❌"}`,
-        `winget: ${prereq.winget ? "✅" : "❌"}`,
-        `WSL: ${prereq.wsl ? "✅" : "❌"}`
+        `Git: ${installPrereq.git ? "✅" : "❌"}`,
+        `Node.js: ${installPrereq.node ? "✅" : "❌"}`,
+        `npm: ${installPrereq.npm ? "✅" : "❌"}`,
+        `uv: ${installPrereq.uv ? "✅" : "❌"}`,
+        `pwsh: ${installPrereq.pwsh ? "✅" : "❌"}`,
+        `WSL: ${installPrereq.wsl ? "✅" : "❌"}`
       ];
 
-      const effectiveInstallCommand = buildInstallCommandForMode(key, hint.install_command, mode);
+      const baseInstallCommand = buildInstallCommandForMode(key, hint.install_command, mode);
+      let selectedNpmRegistrySource = options?.npmRegistrySource;
+      if (!selectedNpmRegistrySource && shouldPromptNpmRegistry(baseInstallCommand)) {
+        const npmRegistrySource = await requestNpmRegistrySource(
+          `Select npm registry source for ${hint.display_name} install`,
+          baseInstallCommand
+        );
+        if (!npmRegistrySource) {
+          setLastResult({
+            ok: false,
+            code: "install_cancelled",
+            message: "已取消安装",
+            detail: null
+          });
+          return;
+        }
+        selectedNpmRegistrySource = npmRegistrySource;
+      }
+      const effectiveInstallCommand = applyNpmRegistrySource(baseInstallCommand, selectedNpmRegistrySource);
       const installSourceLabel = mirrorMode ? "清华源" : "官方源";
       const isKimiInstall = isKimiMirrorInstallKey(key);
+
+      const ps1Ready = await ensurePs1PolicyReady(`Install ${hint.display_name}`);
+      if (!ps1Ready) {
+        return;
+      }
 
       if (!options?.skipPrimaryConfirm) {
         const firstConfirm = await requestConfirm({
@@ -1617,10 +1723,17 @@ export function HomePage() {
     },
     [
       clearTerminalAutoCloseTimer,
-      ensureWingetBeforeCliInstall,
+      ensurePs1PolicyReady,
       emitTerminalScriptPreview,
       installHints,
+      installPrereq.git,
+      installPrereq.node,
+      installPrereq.npm,
+      installPrereq.uv,
+      installPrereq.pwsh,
+      installPrereq.wsl,
       requestConfirm,
+      requestNpmRegistrySource,
       startInstallRecheck
     ]
   );
@@ -1659,15 +1772,39 @@ export function HomePage() {
     async (key: CliKey) => {
       const hint = installHints[key];
       const displayName = hint?.display_name ?? CLI_DEFAULT_TITLES[key];
-      const upgradeCommand = hint?.upgrade_command?.trim();
+      const baseUpgradeCommand = hint?.upgrade_command?.trim();
 
-      if (!upgradeCommand) {
+      if (!baseUpgradeCommand) {
         setLastResult({
           ok: false,
           code: "upgrade_command_missing",
           message: "未找到升级指引",
           detail: `${displayName} 暂未配置升级命令。`
         });
+        return;
+      }
+
+      let selectedNpmRegistrySource: NpmRegistrySource | undefined;
+      if (shouldPromptNpmRegistry(baseUpgradeCommand)) {
+        const npmRegistrySource = await requestNpmRegistrySource(
+          `Select npm registry source for ${displayName} upgrade`,
+          baseUpgradeCommand
+        );
+        if (!npmRegistrySource) {
+          setLastResult({
+            ok: false,
+            code: "upgrade_cancelled",
+            message: "已取消升级",
+            detail: null
+          });
+          return;
+        }
+        selectedNpmRegistrySource = npmRegistrySource;
+      }
+      const upgradeCommand = applyNpmRegistrySource(baseUpgradeCommand, selectedNpmRegistrySource);
+
+      const ps1Ready = await ensurePs1PolicyReady(`Upgrade ${displayName}`);
+      if (!ps1Ready) {
         return;
       }
 
@@ -1716,6 +1853,7 @@ export function HomePage() {
 
         const latestStatuses = await detectClis();
         setStatuses(latestStatuses);
+        await refreshCliUserPathStatuses();
         setLastResult({
           ok: true,
           code: "upgrade_done",
@@ -1736,9 +1874,12 @@ export function HomePage() {
     },
     [
       clearTerminalAutoCloseTimer,
+      ensurePs1PolicyReady,
       emitTerminalScriptPreview,
       installHints,
+      refreshCliUserPathStatuses,
       requestConfirm,
+      requestNpmRegistrySource,
       scheduleTerminalAutoClose
     ]
   );
@@ -1848,19 +1989,6 @@ export function HomePage() {
         detail: null
       });
 
-      setQuickPhase("precheck", "检查 winget 前置环境...");
-      const wingetReady = await ensureWingetBeforeCliInstall("quick_setup");
-      if (!wingetReady) {
-        setQuickSetup({
-          key,
-          phase: "failed",
-          running: false,
-          message: "缺少 winget 前置环境",
-          detail: "请先完成 winget 安装后重试快速安装向导。"
-        });
-        return;
-      }
-
       const readyResult = await terminalEnsureSession();
       if (!readyResult.ok) {
         setQuickSetup({
@@ -1905,6 +2033,18 @@ export function HomePage() {
             code: "quick_setup_prereq_missing",
             message: "快速安装向导前置检查失败",
             detail: `${hint.display_name} 需要 Node.js/npm。`
+          });
+          return;
+        }
+
+        const ps1Ready = await ensurePs1PolicyReady(`Quick setup ${hint.display_name}`);
+        if (!ps1Ready) {
+          setQuickSetup({
+            key,
+            phase: "failed",
+            running: false,
+            message: "PowerShell 脚本策略未就绪",
+            detail: "请先允许执行 ps1 脚本后再重试。"
           });
           return;
         }
@@ -2382,6 +2522,7 @@ export function HomePage() {
 
           const latestStatuses = await detectClis();
           setStatuses(latestStatuses);
+          await refreshCliUserPathStatuses();
 
           setQuickPhase("apply_menu", "正在自动应用右键菜单配置...");
           const payload = buildConfigWithCliDetected(configRef.current, key, true);
@@ -2405,6 +2546,7 @@ export function HomePage() {
           }
 
           await refreshInitialState();
+          await refreshCliUserPathStatuses();
 
           if (hint.requires_oauth && hint.auth_command) {
             setQuickPhase("auth", "正在触发 Kimi 授权登录...");
@@ -2441,7 +2583,31 @@ export function HomePage() {
           return;
         }
 
-        const quickInstallCommand = buildInstallCommandForMode(key, hint.install_command, "official");
+        const quickInstallBaseCommand = buildInstallCommandForMode(key, hint.install_command, "official");
+        let quickInstallCommand = quickInstallBaseCommand;
+        if (shouldPromptNpmRegistry(quickInstallBaseCommand)) {
+          const selectedNpmRegistrySource = await requestNpmRegistrySource(
+            `Select npm registry source for ${hint.display_name} install`,
+            quickInstallBaseCommand
+          );
+          if (!selectedNpmRegistrySource) {
+            setQuickSetup({
+              key,
+              phase: "failed",
+              running: false,
+              message: "已取消快速安装向导",
+              detail: "npm 源选择已取消。"
+            });
+            setLastResult({
+              ok: false,
+              code: "quick_setup_cancelled",
+              message: "已取消快速安装向导",
+              detail: null
+            });
+            return;
+          }
+          quickInstallCommand = applyNpmRegistrySource(quickInstallBaseCommand, selectedNpmRegistrySource);
+        }
         setQuickPhase("install", "正在执行安装命令...");
         emitTerminalScriptPreview(`${hint.display_name} 安装命令`, quickInstallCommand);
         const installScriptResult = await terminalRunScript(quickInstallCommand);
@@ -2546,6 +2712,7 @@ export function HomePage() {
         }
 
         await refreshInitialState();
+        await refreshCliUserPathStatuses();
         setQuickSetup({
           key,
           phase: "done",
@@ -2583,15 +2750,17 @@ export function HomePage() {
       clearTerminalAutoCloseTimer,
       closeEmbeddedTerminalSilently,
       detectClis,
+      ensurePs1PolicyReady,
       emitTerminalScriptPreview,
       installHints,
       requestConfirm,
+      requestNpmRegistrySource,
+      refreshCliUserPathStatuses,
       refreshInitialState,
       runAction,
       runTerminalCommandsSequentially,
       runTerminalScriptAndWait,
       scheduleTerminalAutoClose,
-      ensureWingetBeforeCliInstall,
       setQuickPhase,
       verifyKimiInstallation
     ]
@@ -2706,9 +2875,67 @@ export function HomePage() {
       });
       return;
     }
-    await runAction(() => oneClickUnregisterCleanup(CLEANUP_CONFIRM_TOKEN));
-    await refreshInitialState();
-  }, [refreshInitialState, requestConfirm, runAction]);
+
+    const asRuntimeError = (code: string, message: string, error: unknown): ActionResult => ({
+      ok: false,
+      code,
+      message,
+      detail: String(error)
+    });
+
+    setWorking(true);
+    try {
+      let unregisterResult: ActionResult;
+      try {
+        unregisterResult = await attemptUnregisterNilesoft();
+      } catch (error) {
+        unregisterResult = asRuntimeError("unregister_runtime_exception", "反注册执行失败", error);
+      }
+
+      let cleanupResult: ActionResult;
+      try {
+        cleanupResult = await cleanupAppData(CLEANUP_CONFIRM_TOKEN);
+      } catch (error) {
+        cleanupResult = asRuntimeError("cleanup_runtime_exception", "清理应用数据失败", error);
+      }
+
+      await refreshInitialState();
+
+      if (cleanupResult.ok && unregisterResult.ok) {
+        setLastResult({
+          ok: true,
+          code: "unregister_cleanup_done",
+          message: "一键反注册清理完成",
+          detail: cleanupResult.detail ?? unregisterResult.detail ?? null
+        });
+        return;
+      }
+
+      if (cleanupResult.ok && !unregisterResult.ok) {
+        setLastResult({
+          ok: true,
+          code: "unregister_cleanup_partial",
+          message: "应用数据已清理，但反注册未完成",
+          detail: [`[${unregisterResult.code}] ${unregisterResult.message}`, unregisterResult.detail]
+            .filter(Boolean)
+            .join("\n")
+        });
+        return;
+      }
+
+      setLastResult({
+        ok: false,
+        code: "unregister_cleanup_failed",
+        message: "一键反注册清理失败",
+        detail: [
+          `[${unregisterResult.code}] ${unregisterResult.message}${unregisterResult.detail ? `: ${unregisterResult.detail}` : ""}`,
+          `[${cleanupResult.code}] ${cleanupResult.message}${cleanupResult.detail ? `: ${cleanupResult.detail}` : ""}`
+        ].join("\n")
+      });
+    } finally {
+      setWorking(false);
+    }
+  }, [refreshInitialState, requestConfirm]);
 
   const onRepairMenuFallback = useCallback(async () => {
     const payload = normalizeLockedConfig({
@@ -2910,39 +3137,15 @@ export function HomePage() {
       return;
     }
 
-    const isMaintenanceFailure =
-      !lastResult.ok &&
-      MAINTENANCE_FAILURE_CODES.has(lastResult.code);
-
-    if (isMaintenanceFailure) {
-      const detailLines = [
-        `错误码: [${lastResult.code}]`,
-        `错误信息: ${lastResult.message}`,
-        ""
-      ];
-      if (lastResult.detail && lastResult.detail.trim().length > 0) {
-        detailLines.push(lastResult.detail);
-      } else {
-        detailLines.push("未返回更多细节，请查看运行日志。");
-      }
-      setMaintenanceDetailDialog({
-        open: true,
-        title: "一键维护失败详情",
-        message: detailLines.join("\n")
-      });
-    }
-
     toastAddRef.current({
       type: lastResult.ok ? "success" : "error",
       priority: lastResult.ok ? "low" : "high",
-      timeout: lastResult.ok ? 2600 : 10000,
+      timeout: lastResult.ok ? 2600 : 4500,
       title: lastResult.message,
       description: (
         <div className="grid gap-1">
           <span className="font-mono text-[11px] text-[var(--ui-muted)]">[{lastResult.code}]</span>
-          {isMaintenanceFailure ? (
-            <span className="text-xs text-[var(--ui-muted)]">详情弹窗已自动打开。</span>
-          ) : lastResult.detail ? (
+          {lastResult.detail ? (
             <details className="text-xs">
               <summary className="cursor-pointer select-none text-[var(--ui-text)]">详情</summary>
               <pre className="mt-1.5 text-[11px]">{lastResult.detail}</pre>
@@ -3086,6 +3289,7 @@ export function HomePage() {
                 toggles={config.toggles}
                 statuses={statuses}
                 installHints={installHints}
+                cliUserPathStatuses={cliUserPathStatuses}
                 installPrereq={installPrereq}
                 loading={loading}
                 working={working}
@@ -3105,6 +3309,7 @@ export function HomePage() {
                 onOpenInstallDocs={onOpenInstallDocs}
                 onOpenNodejsDownload={onOpenNodejsDownload}
                 onLaunchInstall={onLaunchInstall}
+                onAddCliCommandDirToUserPath={onAddCliCommandDirToUserPath}
                 onLaunchAuth={onLaunchAuth}
                 onLaunchUpgrade={onLaunchUpgrade}
                 onLaunchUninstall={onLaunchUninstall}
@@ -3298,11 +3503,14 @@ export function HomePage() {
         onCancel={() => settleGitSourceDialog(null)}
       />
 
-      <WingetInstallSourceDialog
-        open={wingetSourceDialogOpen}
-        onSelectOfficial={() => settleWingetSourceDialog("official")}
-        onSelectStore={() => settleWingetSourceDialog("store")}
-        onCancel={() => settleWingetSourceDialog(null)}
+      <NpmRegistrySourceDialog
+        open={npmRegistryDialog.open}
+        title={npmRegistryDialog.title}
+        officialCommand={npmRegistryDialog.officialCommand}
+        mirrorCommand={npmRegistryDialog.mirrorCommand}
+        onSelectOfficial={() => settleNpmRegistryDialog("official")}
+        onSelectMirror={() => settleNpmRegistryDialog("npmmirror")}
+        onCancel={() => settleNpmRegistryDialog(null)}
       />
 
       <AppConfirmDialog
@@ -3314,17 +3522,6 @@ export function HomePage() {
         danger={confirmDialog.danger}
         onConfirm={() => settleConfirmDialog(true)}
         onCancel={() => settleConfirmDialog(false)}
-      />
-
-      <AppConfirmDialog
-        open={maintenanceDetailDialog.open}
-        title={maintenanceDetailDialog.title}
-        message={maintenanceDetailDialog.message}
-        confirmText="知道了"
-        cancelText="关闭"
-        danger
-        onConfirm={closeMaintenanceDetailDialog}
-        onCancel={closeMaintenanceDetailDialog}
       />
 
       <UsageGuideDialog open={usageGuideOpen} onClose={() => setUsageGuideOpen(false)} />

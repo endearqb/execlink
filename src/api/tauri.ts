@@ -3,6 +3,7 @@ import type {
   ActionResult,
   AppConfig,
   CliInstallHintMap,
+  CliUserPathStatusMap,
   CliStatusMap,
   DiagnosticsInfo,
   GitInstallSource,
@@ -12,7 +13,8 @@ import type {
   InstallLaunchRequest,
   InstallPrereqStatus,
   InitialState,
-  InstallStatus
+  InstallStatus,
+  PowerShellPs1PolicyStatus
 } from "../types/config";
 
 const TAURI_RUNTIME_UNAVAILABLE_MESSAGE =
@@ -87,6 +89,22 @@ export function getCliInstallHints() {
 
 export function getInstallPrereqStatus() {
   return invokeTauri<InstallPrereqStatus>("get_install_prereq_status");
+}
+
+export function getCliUserPathStatuses() {
+  return invokeTauri<CliUserPathStatusMap>("get_cli_user_path_statuses");
+}
+
+export function addCliCommandDirToUserPath(key: CliKey) {
+  return invokeTauri<ActionResult>("add_cli_command_dir_to_user_path", { key });
+}
+
+export function getPowershellPs1PolicyStatus() {
+  return invokeTauri<PowerShellPs1PolicyStatus>("get_powershell_ps1_policy_status");
+}
+
+export function fixPowershellPs1Policy() {
+  return invokeTauri<ActionResult>("fix_powershell_ps1_policy");
 }
 
 export function launchCliInstall(request: InstallLaunchRequest) {

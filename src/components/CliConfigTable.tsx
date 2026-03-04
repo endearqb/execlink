@@ -22,6 +22,7 @@ import {
   CLI_DEFAULT_TITLES,
   type CliInstallHint,
   type CliInstallHintMap,
+  type CliUserPathStatusMap,
   type CliKey,
   type CliStatusMap,
   type InstallPrereqStatus
@@ -67,6 +68,7 @@ interface CliConfigTableProps {
   toggles: Record<CliKey, boolean>;
   statuses: CliStatusMap;
   installHints: CliInstallHintMap;
+  cliUserPathStatuses: CliUserPathStatusMap;
   installPrereq: InstallPrereqStatus;
   loading: boolean;
   working: boolean;
@@ -81,6 +83,7 @@ interface CliConfigTableProps {
   onOpenInstallDocs: (key: CliKey) => void | Promise<void>;
   onOpenNodejsDownload: () => void | Promise<void>;
   onLaunchInstall: (key: CliKey) => void | Promise<void>;
+  onAddCliCommandDirToUserPath: (key: CliKey) => void | Promise<void>;
   onLaunchAuth: (key: CliKey) => void | Promise<void>;
   onLaunchUpgrade: (key: CliKey) => void | Promise<void>;
   onLaunchUninstall: (key: CliKey) => void | Promise<void>;
@@ -100,12 +103,14 @@ interface SortableCliCardProps {
   showTerminal: boolean;
   terminalState: string;
   installPrereq: InstallPrereqStatus;
+  cliUserPathStatus?: CliUserPathStatusMap[string];
   onSetDisplayName: (key: CliKey, value: string) => void;
   onSetToggle: (key: CliKey, checked: boolean) => void;
   onCopyInstallCommand: (key: CliKey) => void | Promise<void>;
   onOpenInstallDocs: (key: CliKey) => void | Promise<void>;
   onOpenNodejsDownload: () => void | Promise<void>;
   onLaunchInstall: (key: CliKey) => void | Promise<void>;
+  onAddCliCommandDirToUserPath: (key: CliKey) => void | Promise<void>;
   onLaunchAuth: (key: CliKey) => void | Promise<void>;
   onLaunchUpgrade: (key: CliKey) => void | Promise<void>;
   onLaunchUninstall: (key: CliKey) => void | Promise<void>;
@@ -158,12 +163,14 @@ function SortableCliCard({
   showTerminal,
   terminalState,
   installPrereq,
+  cliUserPathStatus,
   onSetDisplayName,
   onSetToggle,
   onCopyInstallCommand,
   onOpenInstallDocs,
   onOpenNodejsDownload,
   onLaunchInstall,
+  onAddCliCommandDirToUserPath,
   onLaunchAuth,
   onLaunchUpgrade,
   onLaunchUninstall,
@@ -216,6 +223,9 @@ function SortableCliCard({
   const copyLabel = `复制 ${row.title} 安装命令`;
   const docsLabel = `打开 ${row.title} 安装说明`;
 
+  const userPathFixLabel = "加入环境变量";
+  const showUserPathFixAction = Boolean(cliUserPathStatus?.needs_user_path_fix);
+
   const style = {
     transform: CSS.Transform.toString(transform),
     transition
@@ -248,6 +258,19 @@ function SortableCliCard({
                 onPointerDown={(event) => event.stopPropagation()}
                 onMouseDown={(event) => event.stopPropagation()}
               >
+                {showUserPathFixAction ? (
+                  <IconActionButton
+                    label={userPathFixLabel}
+                    disabled={working || loading || !!installingKey}
+                    onClick={() => onAddCliCommandDirToUserPath(row.key)}
+                    className="shrink-0"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
+                      <path d="M4 12h16" strokeLinecap="round" />
+                      <path d="M12 4v16" strokeLinecap="round" />
+                    </svg>
+                  </IconActionButton>
+                ) : null}
                 <IconActionButton
                   label={authLabel}
                   disabled={working || loading || !!installingKey || !row.hint}
@@ -435,6 +458,7 @@ export function CliConfigTable({
   toggles,
   statuses,
   installHints,
+  cliUserPathStatuses,
   installPrereq,
   loading,
   working,
@@ -449,6 +473,7 @@ export function CliConfigTable({
   onOpenInstallDocs,
   onOpenNodejsDownload,
   onLaunchInstall,
+  onAddCliCommandDirToUserPath,
   onLaunchAuth,
   onLaunchUpgrade,
   onLaunchUninstall,
@@ -520,12 +545,14 @@ export function CliConfigTable({
             showTerminal={focusedCliKey === row.key && !suppressTerminal}
             terminalState={terminalState}
             installPrereq={installPrereq}
+            cliUserPathStatus={cliUserPathStatuses[row.key]}
             onSetDisplayName={onSetDisplayName}
             onSetToggle={onSetToggle}
             onCopyInstallCommand={onCopyInstallCommand}
             onOpenInstallDocs={onOpenInstallDocs}
             onOpenNodejsDownload={onOpenNodejsDownload}
             onLaunchInstall={onLaunchInstall}
+            onAddCliCommandDirToUserPath={onAddCliCommandDirToUserPath}
             onLaunchAuth={onLaunchAuth}
             onLaunchUpgrade={onLaunchUpgrade}
             onLaunchUninstall={onLaunchUninstall}
