@@ -812,7 +812,7 @@ fn build_hkcu_menu_script(config: &AppConfig) -> String {
     let mut script = vec![
         "$ErrorActionPreference='Stop'".to_string(),
         format!("$menuName = '{menu_name}'"),
-        "$roots = @(\"HKCU:\\Software\\Classes\\Directory\\Background\\shell\", \"HKCU:\\Software\\Classes\\Directory\\shell\")".to_string(),
+        "$roots = @(\"HKCU:\\Software\\Classes\\Directory\\Background\\shell\", \"HKCU:\\Software\\Classes\\Directory\\shell\", \"HKCU:\\Software\\Classes\\DesktopBackground\\shell\", \"HKCU:\\Software\\Classes\\Drive\\shell\")".to_string(),
         "foreach ($root in $roots) {".to_string(),
         "  $base = \"$root\\$menuName\"".to_string(),
         "  New-Item -Path $base -Force | Out-Null".to_string(),
@@ -851,7 +851,7 @@ fn build_remove_hkcu_menu_script(menu_title: &str) -> String {
     [
         "$ErrorActionPreference='Stop'".to_string(),
         format!("$menuName = '{menu_name}'"),
-        "$targets = @(\"HKCU:\\Software\\Classes\\Directory\\Background\\shell\\$menuName\", \"HKCU:\\Software\\Classes\\Directory\\shell\\$menuName\")".to_string(),
+        "$targets = @(\"HKCU:\\Software\\Classes\\Directory\\Background\\shell\\$menuName\", \"HKCU:\\Software\\Classes\\Directory\\shell\\$menuName\", \"HKCU:\\Software\\Classes\\DesktopBackground\\shell\\$menuName\", \"HKCU:\\Software\\Classes\\Drive\\shell\\$menuName\")".to_string(),
         "foreach ($target in $targets) { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue }".to_string(),
         "Write-Output 'hkcu_menu_removed'".to_string(),
     ]
@@ -861,7 +861,7 @@ fn build_remove_hkcu_menu_script(menu_title: &str) -> String {
 fn build_list_hkcu_menu_groups_script() -> String {
     [
         "$ErrorActionPreference='Stop'".to_string(),
-        "$roots = @('HKCU:\\Software\\Classes\\Directory\\Background\\shell', 'HKCU:\\Software\\Classes\\Directory\\shell')".to_string(),
+        "$roots = @('HKCU:\\Software\\Classes\\Directory\\Background\\shell', 'HKCU:\\Software\\Classes\\Directory\\shell', 'HKCU:\\Software\\Classes\\DesktopBackground\\shell', 'HKCU:\\Software\\Classes\\Drive\\shell')".to_string(),
         "$rows = New-Object System.Collections.Generic.List[Object]".to_string(),
         "foreach ($root in $roots) {".to_string(),
         "  if (!(Test-Path $root)) { continue }".to_string(),
@@ -1763,24 +1763,32 @@ pub fn one_click_install_repair(app: AppHandle, config: AppConfig) -> ActionResu
         logging::log_line("[one-click-maintenance] stage=register begin");
         let elevated = request_elevation_and_register();
         detail_lines.push(format!("[register] {}", summarize_action_result(&elevated)));
-        if !elevated.ok {
-            logging::log_line(&format!(
-                "[one-click-maintenance] stage=register failed code={} message={}",
-                elevated.code, elevated.message
-            ));
-            return ActionResult {
-                ok: false,
-                code: "maintenance_register_incomplete".to_string(),
-                message: "一键维护失败：提权注册失败".to_string(),
-                detail: Some(detail_lines.join("\n")),
-            };
-        }
         install_state = nilesoft_install::inspect_installation();
         detail_lines.push(format!("[recheck] {}", install_state.message));
         logging::log_line(&format!(
             "[one-click-maintenance] stage=recheck installed={} registered={} needs_elevation={}",
             install_state.installed, install_state.registered, install_state.needs_elevation
         ));
+        if !elevated.ok {
+            if !install_state.installed || !install_state.registered || install_state.needs_elevation {
+                logging::log_line(&format!(
+                    "[one-click-maintenance] stage=register failed code={} message={}",
+                    elevated.code, elevated.message
+                ));
+                return ActionResult {
+                    ok: false,
+                    code: "maintenance_register_incomplete".to_string(),
+                    message: "一键维护失败：提权注册失败".to_string(),
+                    detail: Some(detail_lines.join("\n")),
+                };
+            }
+            detail_lines.push(
+                "[register] 提权命令返回异常，但复检确认注册已完成，继续后续流程".to_string(),
+            );
+            logging::log_line(
+                "[one-click-maintenance] stage=register command reported error but recheck passed",
+            );
+        }
     }
 
     if !install_state.installed || !install_state.registered || install_state.needs_elevation {
@@ -1875,6 +1883,19 @@ pub fn request_elevation_and_register() -> ActionResult {
             ActionResult::ok("提权注册成功")
         }
         Err(error) => {
+            let recheck = nilesoft_install::inspect_installation();
+            if recheck.installed && recheck.registered && !recheck.needs_elevation {
+                nilesoft_install::mark_register_success(&shell_exe);
+                return ActionResult {
+                    ok: true,
+                    code: "register_elevated_recheck_ok".to_string(),
+                    message: "提权注册已通过复检确认成功".to_string(),
+                    detail: Some(format!(
+                        "原始返回异常: {error}\n复检结果: {}",
+                        recheck.message
+                    )),
+                };
+            }
             nilesoft_install::mark_register_failure(&shell_exe, error.clone());
             let _ = state::mark_runtime_error(format!("register_elevated: {error}"));
             ActionResult::err("register_elevated_failed", "提权注册失败", error)

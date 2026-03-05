@@ -76,28 +76,30 @@ Write-Host 'Git 安装程序执行完成。'
 - Kimi 使用 `uv` 安装。
 - 目标 Python 版本为 `3.13`。
 
-### 2.1 检测并安装 uv（winget 优先，官方脚本回退）
+### 2.1 检测并安装 uv（支持官方/清华/阿里）
+
+ExecLink 已支持 `uv` 安装源策略选择：
+
+- `auto`（默认）：`winget -> 官方脚本 -> 清华镜像 -> 阿里镜像`
+- `official`：`winget -> 官方脚本`
+- `tuna`：`清华镜像 -> 官方脚本`
+- `aliyun`：`阿里镜像 -> 官方脚本`
+
+其中镜像模式会解析 `LatestRelease` 页面链接，自动寻找 `uv-x86_64-pc-windows-msvc.zip`，下载并提取 `uv.exe` 到用户目录（默认 `.local\bin`），随后复检 `uv --version`。
+
+常用地址：
+
+- 清华镜像 LatestRelease：`https://mirrors.tuna.tsinghua.edu.cn/github-release/astral-sh/uv/LatestRelease/`
+- 阿里镜像 LatestRelease：`https://mirrors.aliyun.com/github-release/astral-sh/uv/LatestRelease/`
+- 官方脚本：`https://astral.sh/uv/install.ps1`
+
+示例（自动回退）：
 
 ```powershell
 $__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue
-if (-not $__execlink_uv_cmd) {
-  $__execlink_winget_cmd = Get-Command winget -ErrorAction SilentlyContinue
-  if ($__execlink_winget_cmd) {
-    try {
-      winget install --id astral-sh.uv -e --source winget --accept-source-agreements --accept-package-agreements
-    } catch {
-      Write-Host 'winget install for uv failed; continue with official installer script.'
-    }
-  }
-}
-$__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue
-if (-not $__execlink_uv_cmd) {
-  try {
-    Invoke-RestMethod -Uri 'https://astral.sh/uv/install.ps1' | Invoke-Expression
-  } catch {
-    Write-Host 'official uv installer script failed.'
-  }
-}
+if (-not $__execlink_uv_cmd) { winget install --id astral-sh.uv -e --source winget --accept-source-agreements --accept-package-agreements }
+if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { Invoke-RestMethod -Uri 'https://astral.sh/uv/install.ps1' | Invoke-Expression }
+# 若仍失败，依次尝试清华/阿里 LatestRelease，下载 uv-x86_64-pc-windows-msvc.zip 并提取 uv.exe
 $__execlink_uv_candidate_dirs = @((Join-Path $HOME '.local\bin'), (Join-Path $HOME '.cargo\bin'))
 foreach ($__execlink_uv_bin_dir in $__execlink_uv_candidate_dirs) {
   if ((Test-Path $__execlink_uv_bin_dir) -and ($env:Path -notlike "*$__execlink_uv_bin_dir*")) {
@@ -106,10 +108,14 @@ foreach ($__execlink_uv_bin_dir in $__execlink_uv_candidate_dirs) {
 }
 $__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue
 if (-not $__execlink_uv_cmd) {
-  throw 'uv not found after installation. Run: winget install --id astral-sh.uv -e'
+  throw 'uv not found after all fallback steps.'
 }
 uv --version
 ```
+
+说明：
+
+- `uv` 安装成功后，ExecLink 会自动重启一次内置终端会话，再继续后续安装步骤，确保 PATH 生效一致。
 
 ### 2.2 安装 Python 3.13 与 kimi-cli
 
@@ -211,3 +217,19 @@ uv --version
 py -3.13 --version
 kimi -v
 ```
+
+## 6. 超时与进度可视化（ExecLink 新增）
+
+在 ExecLink 的“菜单”页可配置分阶段超时（单位秒），并在安装执行时显示实时倒计时：
+
+- 脚本执行超时
+- 安装复检超时
+- 向导复检超时
+- 镜像探测超时
+- Python 运行时检查超时
+- winget 复检超时
+
+快速安装向导期间：
+
+- 即使内置终端被隐藏，也可在向导详情查看“实时日志尾部（最近 40 行）”。
+- 超时后会返回结构化错误与终端输出尾部，便于排障。

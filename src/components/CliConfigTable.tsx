@@ -22,6 +22,7 @@ import {
   CLI_DEFAULT_TITLES,
   type CliInstallHint,
   type CliInstallHintMap,
+  type InstallCountdownState,
   type CliUserPathStatusMap,
   type CliKey,
   type CliStatusMap,
@@ -75,6 +76,7 @@ interface CliConfigTableProps {
   installingKey: CliKey | null;
   focusedCliKey: CliKey | null;
   terminalState: string;
+  terminalCountdown: InstallCountdownState | null;
   suppressTerminal: boolean;
   onReorder: (nextOrder: CliKey[]) => void;
   onSetDisplayName: (key: CliKey, value: string) => void;
@@ -102,6 +104,7 @@ interface SortableCliCardProps {
   focusMode: boolean;
   showTerminal: boolean;
   terminalState: string;
+  terminalCountdown: InstallCountdownState | null;
   installPrereq: InstallPrereqStatus;
   cliUserPathStatus?: CliUserPathStatusMap[string];
   onSetDisplayName: (key: CliKey, value: string) => void;
@@ -162,6 +165,7 @@ function SortableCliCard({
   focusMode,
   showTerminal,
   terminalState,
+  terminalCountdown,
   installPrereq,
   cliUserPathStatus,
   onSetDisplayName,
@@ -441,6 +445,7 @@ function SortableCliCard({
         <div className="mt-3">
           <TerminalPanel
             state={terminalState}
+            countdown={terminalCountdown}
             onEnsureReady={onTerminalEnsureReady}
             onRunScript={onTerminalRunScript}
             onResize={onTerminalResize}
@@ -465,6 +470,7 @@ export function CliConfigTable({
   installingKey,
   focusedCliKey,
   terminalState,
+  terminalCountdown,
   suppressTerminal,
   onReorder,
   onSetDisplayName,
@@ -544,6 +550,7 @@ export function CliConfigTable({
             focusMode={focusMode}
             showTerminal={focusedCliKey === row.key && !suppressTerminal}
             terminalState={terminalState}
+            terminalCountdown={terminalCountdown}
             installPrereq={installPrereq}
             cliUserPathStatus={cliUserPathStatuses[row.key]}
             onSetDisplayName={onSetDisplayName}

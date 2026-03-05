@@ -1,4 +1,9 @@
-import { type QuickSetupPhase, type QuickSetupStatus, CLI_DEFAULT_TITLES } from "../types/config";
+import {
+  type InstallCountdownState,
+  type QuickSetupPhase,
+  type QuickSetupStatus,
+  CLI_DEFAULT_TITLES
+} from "../types/config";
 
 const DEFAULT_PHASES: QuickSetupPhase[] = [
   "precheck",
@@ -49,11 +54,23 @@ const PHASE_LABELS: Record<QuickSetupPhase, string> = {
 
 interface Props {
   status: QuickSetupStatus;
+  countdown: InstallCountdownState | null;
+  logTail: string | null;
   onClose: () => void;
   onRetry: () => void;
 }
 
-export function QuickSetupWizard({ status, onClose, onRetry }: Props) {
+function formatCountdown(remainingMs: number, totalMs: number) {
+  const toClock = (valueMs: number) => {
+    const seconds = Math.max(0, Math.ceil(valueMs / 1000));
+    const minutes = Math.floor(seconds / 60);
+    const rest = seconds % 60;
+    return `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
+  };
+  return `${toClock(remainingMs)} / ${toClock(totalMs)}`;
+}
+
+export function QuickSetupWizard({ status, countdown, logTail, onClose, onRetry }: Props) {
   if (!status.key) {
     return null;
   }
@@ -113,11 +130,24 @@ export function QuickSetupWizard({ status, onClose, onRetry }: Props) {
       <div className="rounded-xl border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-2 text-xs text-[var(--ui-text)] shadow-[3px_3px_6px_#d5d0c4,-3px_-3px_6px_#ffffff]">
         <div className="font-semibold">{PHASE_LABELS[status.phase] ?? status.phase}</div>
         <div className="mt-1 text-[var(--ui-muted)]">{status.message}</div>
+        {countdown?.active ? (
+          <div className="mt-1 rounded-lg border border-[#ddd5c9] bg-[#efe8dd] px-2 py-1 text-[11px] text-[#5f564d]">
+            <span className="font-semibold">{countdown.label}</span>
+            {" · "}
+            <span>倒计时 {formatCountdown(countdown.remaining_ms, countdown.total_ms)}</span>
+          </div>
+        ) : null}
         <div className="mt-1 text-[11px] text-[var(--ui-muted)]">向导期间已隐藏内置终端；如需排查请展开详情。</div>
         {status.detail ? (
           <details className="mt-1.5 text-[11px]">
             <summary className="cursor-pointer select-none text-[var(--ui-text)]">详情（可展开）</summary>
             <pre className="mt-1 whitespace-pre-wrap break-all">{status.detail}</pre>
+          </details>
+        ) : null}
+        {logTail ? (
+          <details className="mt-1.5 text-[11px]">
+            <summary className="cursor-pointer select-none text-[var(--ui-text)]">实时日志尾部（最近 40 行）</summary>
+            <pre className="mt-1 whitespace-pre-wrap break-all">{logTail}</pre>
           </details>
         ) : null}
       </div>

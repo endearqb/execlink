@@ -20,6 +20,9 @@ const SHELL_NSS_MINIMAL: &str = "settings
   tip.enabled=true
 }
 
+import 'imports/theme.nss'
+import 'imports/images.nss'
+import 'imports/taskbar.nss'
 import 'imports/ai-clis.nss'
 ";
 const SHELL_NSS_WITH_DEFAULTS: &str = "settings
@@ -113,7 +116,7 @@ pub fn render_ai_clis_nss(config: &AppConfig) -> String {
 
     let menu_title = escape_single_quoted(&config.menu_title);
     format!(
-        "menu(type='dir|back.dir' mode='single' title='{menu_title}')\n{{\n{rendered_items}\n}}\n"
+        "menu(type='dir|drive|back|back.dir' mode='single' title='{menu_title}')\n{{\n{rendered_items}\n}}\n"
     )
 }
 
@@ -341,6 +344,8 @@ mod tests {
             terminal_theme_id: "vscode-dark-plus".to_string(),
             terminal_theme_mode: TerminalThemeMode::Auto,
             ps_prompt_style: PsPromptStyle::Basic,
+            uv_install_source_mode: Default::default(),
+            install_timeouts: Default::default(),
             advanced_menu_mode: false,
             menu_theme_enabled: false,
             use_windows_terminal: false,

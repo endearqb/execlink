@@ -526,6 +526,8 @@ mod tests {
             terminal_theme_id: DEFAULT_THEME_ID.to_string(),
             terminal_theme_mode: TerminalThemeMode::Auto,
             ps_prompt_style: PsPromptStyle::Basic,
+            uv_install_source_mode: Default::default(),
+            install_timeouts: Default::default(),
             advanced_menu_mode: false,
             menu_theme_enabled: false,
             use_windows_terminal: false,

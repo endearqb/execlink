@@ -69,6 +69,17 @@ export interface RuntimeState {
   last_error: string | null;
 }
 
+export type UvInstallSourceMode = "auto" | "official" | "tuna" | "aliyun";
+
+export interface InstallTimeoutConfig {
+  terminal_script_timeout_ms: number;
+  install_recheck_timeout_ms: number;
+  quick_setup_detect_timeout_ms: number;
+  mirror_probe_timeout_ms: number;
+  python_runtime_check_timeout_ms: number;
+  winget_install_recheck_timeout_ms: number;
+}
+
 export type TerminalMode = "auto" | "pwsh" | "powershell" | "wt";
 export type TerminalThemeMode = "auto" | "dark" | "light";
 export type PsPromptStyle = "basic" | "none";
@@ -104,6 +115,8 @@ export interface AppConfig {
   terminal_theme_id: string;
   terminal_theme_mode: TerminalThemeMode;
   ps_prompt_style: PsPromptStyle;
+  uv_install_source_mode: UvInstallSourceMode;
+  install_timeouts: InstallTimeoutConfig;
   advanced_menu_mode: boolean;
   menu_theme_enabled: boolean;
   // backward-compatible field, currently not exposed in UI
@@ -228,6 +241,13 @@ export interface QuickSetupStatus {
   detail?: string | null;
 }
 
+export interface InstallCountdownState {
+  active: boolean;
+  label: string;
+  total_ms: number;
+  remaining_ms: number;
+}
+
 export interface TerminalOutputEvent {
   session_id: string;
   seq: number;
@@ -274,8 +294,17 @@ export interface DiagnosticsInfo {
   log_tail: string[];
 }
 
+export const DEFAULT_INSTALL_TIMEOUTS: InstallTimeoutConfig = {
+  terminal_script_timeout_ms: 10 * 60 * 1000,
+  install_recheck_timeout_ms: 10 * 60 * 1000,
+  quick_setup_detect_timeout_ms: 5 * 60 * 1000,
+  mirror_probe_timeout_ms: 20 * 1000,
+  python_runtime_check_timeout_ms: 15 * 1000,
+  winget_install_recheck_timeout_ms: 3 * 60 * 1000
+};
+
 export const DEFAULT_CONFIG: AppConfig = {
-  version: 8,
+  version: 9,
   enable_context_menu: true,
   menu_title: "AI CLIs",
   cli_order: [...CLI_DEFAULT_ORDER],
@@ -293,6 +322,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   terminal_theme_id: "vscode-dark-plus",
   terminal_theme_mode: "auto",
   ps_prompt_style: "basic",
+  uv_install_source_mode: "auto",
+  install_timeouts: { ...DEFAULT_INSTALL_TIMEOUTS },
   advanced_menu_mode: false,
   menu_theme_enabled: false,
   use_windows_terminal: true,

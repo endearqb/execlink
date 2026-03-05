@@ -41,6 +41,7 @@ import { CliConfigTable } from "../components/CliConfigTable";
 import { AppConfirmDialog } from "../components/AppConfirmDialog";
 import { GitInstallSourceDialog } from "../components/GitInstallSourceDialog";
 import { NpmRegistrySourceDialog } from "../components/NpmRegistrySourceDialog";
+import { UvInstallSourceDialog } from "../components/UvInstallSourceDialog";
 import { WingetInstallSourceDialog } from "../components/WingetInstallSourceDialog";
 import { QuickSetupWizard } from "../components/QuickSetupWizard";
 import { UsageGuideDialog } from "../components/UsageGuideDialog";
@@ -59,13 +60,17 @@ import {
   type CliStatusMap,
   type GitInstallSource,
   type HkcuMenuGroup,
+  type InstallCountdownState,
   type InstallPrereqStatus,
+  type InstallTimeoutConfig,
   type InstallStatus,
   type PowerShellPs1PolicyStatus,
   type QuickSetupPhase,
   type QuickSetupStatus,
   type TerminalOutputEvent,
-  type TerminalStateEvent
+  type TerminalStateEvent,
+  type UvInstallSourceMode,
+  DEFAULT_INSTALL_TIMEOUTS
 } from "../types/config";
 
 const EMPTY_STATUS: CliStatusMap = {
@@ -118,8 +123,6 @@ const CLEANUP_CONFIRM_TOKEN = "CONFIRM_CLEANUP_EXECLINK";
 const APP_VERSION = __APP_VERSION__;
 const GITHUB_REPO_URL = "https://github.com/endearqb/execlink";
 const INSTALL_RECHECK_INTERVAL_MS = 2000;
-const INSTALL_RECHECK_TIMEOUT_MS = 10 * 60 * 1000;
-const WINGET_INSTALL_RECHECK_TIMEOUT_MS = 3 * 60 * 1000;
 const OUTSET_LARGE = "shadow-[6px_6px_12px_#d5d0c4,-6px_-6px_12px_#ffffff]";
 const OUTSET_SMALL = "shadow-[3px_3px_6px_#d5d0c4,-3px_-3px_6px_#ffffff]";
 const INSET_SMALL = "shadow-[inset_2px_2px_4px_#d5d0c4,inset_-2px_-2px_4px_#ffffff]";
@@ -145,9 +148,11 @@ const TOAST_ROOT_CLASS = `pointer-events-auto flex items-start justify-between g
 const TOAST_TITLE_CLASS = "text-[0.92rem] font-bold leading-[1.3] text-[var(--ui-text)] data-[type=error]:text-[#7d473e]";
 const TOAST_DESCRIPTION_CLASS = "m-0 text-xs text-[var(--ui-muted)] data-[type=error]:text-[#8a4f45]";
 const SELECT_CLASS = `w-full appearance-none rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-2.5 pr-9 text-sm text-[var(--ui-text)] outline-none ${INSET_SMALL} transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-[#8f8072]/35 disabled:cursor-not-allowed disabled:opacity-60`;
-const QUICK_SETUP_DETECT_TIMEOUT_MS = 5 * 60 * 1000;
 const UV_TUNA_SIMPLE_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple/";
 const UV_ALIYUN_SIMPLE_INDEX_URL = "https://mirrors.aliyun.com/pypi/simple/";
+const UV_TUNA_LATEST_RELEASE_URL = "https://mirrors.tuna.tsinghua.edu.cn/github-release/astral-sh/uv/LatestRelease/";
+const UV_ALIYUN_LATEST_RELEASE_URL = "https://mirrors.aliyun.com/github-release/astral-sh/uv/LatestRelease/";
+const UV_WINDOWS_ASSET_PATTERN = "(?i)uv-x86_64-pc-windows-msvc\\.zip$";
 const KIMI_TARGET_PYTHON_VERSION = "3.13";
 const KIMI_TARGET_PYTHON_PATCH_VERSION = "3.13.12";
 const KIMI_TARGET_PYTHON_USER_EXE = "Programs\\Python\\Python313\\python.exe";
@@ -157,8 +162,6 @@ const KIMI_TUNA_PYTHON_INSTALLER_URL = `https://mirrors.tuna.tsinghua.edu.cn/pyt
 const KIMI_ALIYUN_PYTHON_INSTALLER_URL = `https://mirrors.aliyun.com/python-release/windows/${KIMI_PYTHON_INSTALLER_FILENAME}`;
 const MIRROR_PROBE_CONNECT_TIMEOUT_SEC = 3;
 const MIRROR_PROBE_MAX_TIME_SEC = 8;
-const MIRROR_PROBE_TIMEOUT_MS = 20 * 1000;
-const PYTHON_RUNTIME_CHECK_TIMEOUT_MS = 15 * 1000;
 const MAINTENANCE_FAILURE_CODES = new Set([
   "maintenance_failed",
   "maintenance_install_failed",
@@ -171,6 +174,7 @@ type InstallLaunchMode = "official" | "mirror";
 type NpmRegistrySource = "official" | "npmmirror";
 type WingetInstallEntry = "prereq" | "install" | "quick_setup";
 type WingetInstallMethod = "official" | "store";
+type UvInstallSourceDialogChoice = UvInstallSourceMode;
 
 interface InstallAttemptContext {
   key: CliKey;
@@ -193,6 +197,61 @@ interface NpmRegistryDialogState {
   mirrorCommand: string;
 }
 
+interface UvSourceDialogState {
+  open: boolean;
+}
+
+interface TimeoutBounds {
+  min: number;
+  max: number;
+}
+
+const INSTALL_TIMEOUT_BOUNDS: Record<keyof InstallTimeoutConfig, TimeoutBounds> = {
+  terminal_script_timeout_ms: { min: 30_000, max: 30 * 60 * 1000 },
+  install_recheck_timeout_ms: { min: 60_000, max: 30 * 60 * 1000 },
+  quick_setup_detect_timeout_ms: { min: 60_000, max: 30 * 60 * 1000 },
+  mirror_probe_timeout_ms: { min: 5_000, max: 120_000 },
+  python_runtime_check_timeout_ms: { min: 5_000, max: 180_000 },
+  winget_install_recheck_timeout_ms: { min: 60_000, max: 15 * 60 * 1000 }
+};
+
+const INSTALL_TIMEOUT_FIELDS: Array<{
+  key: keyof InstallTimeoutConfig;
+  title: string;
+  description: string;
+}> = [
+  {
+    key: "terminal_script_timeout_ms",
+    title: "脚本执行超时",
+    description: "单条内置终端命令等待结果标记的最大时长。"
+  },
+  {
+    key: "install_recheck_timeout_ms",
+    title: "安装复检超时",
+    description: "仅执行安装/卸载后等待检测状态变化的最大时长。"
+  },
+  {
+    key: "quick_setup_detect_timeout_ms",
+    title: "向导复检超时",
+    description: "快速安装向导中检测 uv/python/kimi 的最大时长。"
+  },
+  {
+    key: "mirror_probe_timeout_ms",
+    title: "镜像探测超时",
+    description: "镜像 URL 探测命令的等待时长。"
+  },
+  {
+    key: "python_runtime_check_timeout_ms",
+    title: "Python 运行时检查超时",
+    description: "Python 运行时快速校验命令的等待时长。"
+  },
+  {
+    key: "winget_install_recheck_timeout_ms",
+    title: "winget 复检超时",
+    description: "winget 启动安装后自动复检的最大时长。"
+  }
+];
+
 const EMPTY_QUICK_SETUP: QuickSetupStatus = {
   key: null,
   phase: "idle",
@@ -208,6 +267,10 @@ const EMPTY_NPM_REGISTRY_DIALOG: NpmRegistryDialogState = {
   mirrorCommand: ""
 };
 
+const EMPTY_UV_SOURCE_DIALOG: UvSourceDialogState = {
+  open: false
+};
+
 interface ConfirmDialogState {
   open: boolean;
   title: string;
@@ -221,6 +284,32 @@ interface MaintenanceDetailDialogState {
   open: boolean;
   title: string;
   message: string;
+}
+
+function clampTimeout(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function normalizeInstallTimeouts(input?: InstallTimeoutConfig | null): InstallTimeoutConfig {
+  const next: InstallTimeoutConfig = {
+    ...DEFAULT_INSTALL_TIMEOUTS,
+    ...(input ?? {})
+  };
+  for (const key of Object.keys(INSTALL_TIMEOUT_BOUNDS) as Array<keyof InstallTimeoutConfig>) {
+    const bounds = INSTALL_TIMEOUT_BOUNDS[key];
+    next[key] = clampTimeout(next[key], bounds.min, bounds.max);
+  }
+  return next;
+}
+
+function buildNetworkErrorHint(detail: string) {
+  if (!detail.includes("native_exit_code=-2147012867")) {
+    return detail;
+  }
+  return `${detail}\n提示: native_exit_code=-2147012867 (0x80072EFD) 通常表示网络连接失败或域名不可达。`;
 }
 
 function isKimiMirrorInstallKey(key: CliKey) {
@@ -241,6 +330,19 @@ function wingetInstallMethodLabel(method: WingetInstallMethod) {
   return method === "store" ? "微软商店手动下载" : "官方源下载";
 }
 
+function uvInstallSourceModeLabel(mode: UvInstallSourceMode) {
+  switch (mode) {
+    case "official":
+      return "官方优先";
+    case "tuna":
+      return "清华优先";
+    case "aliyun":
+      return "阿里优先";
+    default:
+      return "自动回退";
+  }
+}
+
 function normalizeLockedConfig(config: AppConfig): AppConfig {
   return {
     ...config,
@@ -251,8 +353,10 @@ function normalizeLockedConfig(config: AppConfig): AppConfig {
   };
 }
 
-function buildKimiInstallCommand(useMirror: boolean) {
-  return buildKimiToolInstallCommand(useMirror, true);
+type UvInstallStepKey = "winget" | "official_script" | "tuna_mirror" | "aliyun_mirror";
+
+function buildKimiInstallCommand(useMirror: boolean, uvSourceMode: UvInstallSourceMode) {
+  return buildKimiToolInstallCommand(useMirror, true, uvSourceMode);
 }
 
 function buildKimiPythonInstallCommand(useMirror: boolean) {
@@ -358,30 +462,105 @@ function buildKimiMirrorCliInstallPlanPreview() {
   ].join("\n");
 }
 
-function buildEnsureUvCommandLines(includeVersionCheck: boolean) {
+function buildUvMirrorInstallScript(latestReleaseUrl: string, sourceLabel: string) {
+  const escapedUrl = escapePsSingleQuoted(latestReleaseUrl);
+  const escapedPattern = escapePsSingleQuoted(UV_WINDOWS_ASSET_PATTERN);
+  const escapedLabel = escapePsSingleQuoted(sourceLabel);
+  return [
+    `$__execlink_uv_release_url='${escapedUrl}'`,
+    `$__execlink_uv_asset_pattern='${escapedPattern}'`,
+    "$__execlink_uv_base_uri=[System.Uri]$__execlink_uv_release_url",
+    "$__execlink_uv_page=Invoke-WebRequest -Uri $__execlink_uv_release_url -TimeoutSec 45 -ErrorAction Stop",
+    "$__execlink_uv_links=@($__execlink_uv_page.Links | Where-Object { $_.href })",
+    "$__execlink_uv_asset_href=$__execlink_uv_links | ForEach-Object { $_.href } | Where-Object { $_ -match $__execlink_uv_asset_pattern } | Select-Object -First 1",
+    "if (-not $__execlink_uv_asset_href) { throw 'uv windows x64 asset link missing in latest release page' }",
+    "$__execlink_uv_asset_url=[System.Uri]::new($__execlink_uv_base_uri, $__execlink_uv_asset_href).AbsoluteUri",
+    "$__execlink_uv_zip=Join-Path $env:TEMP 'execlink-uv-x64.zip'",
+    "$__execlink_uv_extract=Join-Path $env:TEMP ('execlink-uv-' + [System.Guid]::NewGuid().ToString('N'))",
+    "$__execlink_uv_target_dir=Join-Path $HOME '.local\\bin'",
+    "Invoke-WebRequest -Uri $__execlink_uv_asset_url -OutFile $__execlink_uv_zip -TimeoutSec 180 -MaximumRedirection 8 -ErrorAction Stop",
+    "if (-not (Test-Path $__execlink_uv_zip)) { throw 'uv zip missing after download' }",
+    "Expand-Archive -Path $__execlink_uv_zip -DestinationPath $__execlink_uv_extract -Force",
+    "$__execlink_uv_exe=Get-ChildItem -Path $__execlink_uv_extract -Recurse -Filter 'uv.exe' -ErrorAction SilentlyContinue | Select-Object -First 1",
+    "if (-not $__execlink_uv_exe) { throw 'uv.exe missing in extracted archive' }",
+    "New-Item -ItemType Directory -Force -Path $__execlink_uv_target_dir | Out-Null",
+    "Copy-Item -Path $__execlink_uv_exe.FullName -Destination (Join-Path $__execlink_uv_target_dir 'uv.exe') -Force",
+    "if (Test-Path $__execlink_uv_zip) { Remove-Item $__execlink_uv_zip -Force -ErrorAction SilentlyContinue }",
+    "if (Test-Path $__execlink_uv_extract) { Remove-Item $__execlink_uv_extract -Recurse -Force -ErrorAction SilentlyContinue }",
+    `Write-Host 'uv mirror install step done: ${escapedLabel}'`
+  ].join("; ");
+}
+
+function buildEnsureUvStepOrder(mode: UvInstallSourceMode): UvInstallStepKey[] {
+  if (mode === "official") {
+    return ["winget", "official_script"];
+  }
+  if (mode === "tuna") {
+    return ["tuna_mirror", "official_script"];
+  }
+  if (mode === "aliyun") {
+    return ["aliyun_mirror", "official_script"];
+  }
+  return ["winget", "official_script", "tuna_mirror", "aliyun_mirror"];
+}
+
+function buildEnsureUvStepScript(step: UvInstallStepKey) {
+  switch (step) {
+    case "winget":
+      return [
+        "$__execlink_winget_cmd = Get-Command winget -ErrorAction SilentlyContinue",
+        "if (-not $__execlink_winget_cmd) { throw 'winget command not found' }",
+        "winget install --id astral-sh.uv -e --source winget --accept-source-agreements --accept-package-agreements"
+      ].join("; ");
+    case "official_script":
+      return "Invoke-RestMethod -Uri 'https://astral.sh/uv/install.ps1' | Invoke-Expression";
+    case "tuna_mirror":
+      return buildUvMirrorInstallScript(UV_TUNA_LATEST_RELEASE_URL, "tuna");
+    case "aliyun_mirror":
+      return buildUvMirrorInstallScript(UV_ALIYUN_LATEST_RELEASE_URL, "aliyun");
+    default:
+      return "";
+  }
+}
+
+function buildEnsureUvCommandLines(mode: UvInstallSourceMode, includeVersionCheck: boolean) {
+  const steps = buildEnsureUvStepOrder(mode);
+  const stepLabel: Record<UvInstallStepKey, string> = {
+    winget: "winget",
+    official_script: "official",
+    tuna_mirror: "tuna",
+    aliyun_mirror: "aliyun"
+  };
   const lines = [
+    "$__execlink_uv_failures = New-Object System.Collections.Generic.List[string]",
     "$__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
-    "if (-not $__execlink_uv_cmd) { $__execlink_winget_cmd = Get-Command winget -ErrorAction SilentlyContinue; if ($__execlink_winget_cmd) { try { winget install --id astral-sh.uv -e --source winget --accept-source-agreements --accept-package-agreements } catch { Write-Host 'winget install for uv failed; continue with official installer script.' } } }",
-    "$__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
-    "if (-not $__execlink_uv_cmd) { try { Invoke-RestMethod -Uri 'https://astral.sh/uv/install.ps1' | Invoke-Expression } catch { Write-Host 'official uv installer script failed.' } }",
     "$__execlink_uv_candidate_dirs = @((Join-Path $HOME '.local\\bin'), (Join-Path $HOME '.cargo\\bin'))",
     "foreach ($__execlink_uv_bin_dir in $__execlink_uv_candidate_dirs) { if ((Test-Path $__execlink_uv_bin_dir) -and ($env:Path -notlike \"*$__execlink_uv_bin_dir*\")) { $env:Path = \"$__execlink_uv_bin_dir;$env:Path\" } }",
-    "$__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue",
-    "if (-not $__execlink_uv_cmd) {",
-    "  throw 'uv not found after installation. Run: winget install --id astral-sh.uv -e'",
-    "}"
+    "$__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue"
   ];
+
+  for (const step of steps) {
+    lines.push("if (-not $__execlink_uv_cmd) {");
+    lines.push(`  try { ${buildEnsureUvStepScript(step)} } catch { $__execlink_uv_failures.Add('${stepLabel[step]}: ' + $_.Exception.Message) }`);
+    lines.push("  $__execlink_uv_cmd = Get-Command uv -ErrorAction SilentlyContinue");
+    lines.push("}");
+  }
+
+  lines.push("if (-not $__execlink_uv_cmd) {");
+  lines.push("  $__execlink_uv_detail = if ($__execlink_uv_failures.Count -gt 0) { $__execlink_uv_failures -join ' | ' } else { 'no fallback step executed' }");
+  lines.push("  throw ('uv not found after installation. attempts=' + $__execlink_uv_detail)");
+  lines.push("}");
   if (includeVersionCheck) {
     lines.push("uv --version");
   }
   return lines;
 }
 
-function buildKimiToolInstallCommand(useMirror: boolean, ensureUv: boolean) {
+function buildKimiToolInstallCommand(useMirror: boolean, ensureUv: boolean, uvSourceMode: UvInstallSourceMode) {
   const lines = ["$ErrorActionPreference='Stop'"];
 
   if (ensureUv) {
-    lines.push(...buildEnsureUvCommandLines(false));
+    lines.push(...buildEnsureUvCommandLines(uvSourceMode, false));
   }
 
   lines.push(buildKimiPythonInstallCommand(useMirror));
@@ -389,8 +568,8 @@ function buildKimiToolInstallCommand(useMirror: boolean, ensureUv: boolean) {
   return lines.join("\n");
 }
 
-function buildKimiUvBootstrapCommands() {
-  return ["$ErrorActionPreference='Stop'", ...buildEnsureUvCommandLines(true)];
+function buildKimiUvBootstrapCommands(uvSourceMode: UvInstallSourceMode) {
+  return ["$ErrorActionPreference='Stop'", ...buildEnsureUvCommandLines(uvSourceMode, true)];
 }
 
 function encodeUtf8ToBase64(value: string) {
@@ -402,10 +581,15 @@ function encodeUtf8ToBase64(value: string) {
   return window.btoa(binary);
 }
 
-function buildInstallCommandForMode(key: CliKey, installCommand: string, mode: InstallLaunchMode) {
+function buildInstallCommandForMode(
+  key: CliKey,
+  installCommand: string,
+  mode: InstallLaunchMode,
+  uvSourceMode: UvInstallSourceMode
+) {
   if (isKimiMirrorInstallKey(key)) {
     if (mode === "mirror") {
-      return buildKimiInstallCommand(true);
+      return buildKimiInstallCommand(true, uvSourceMode);
     }
     return installCommand;
   }
@@ -475,6 +659,9 @@ export function HomePage() {
   const [gitSourceDialogOpen, setGitSourceDialogOpen] = useState(false);
   const [wingetSourceDialogOpen, setWingetSourceDialogOpen] = useState(false);
   const [npmRegistryDialog, setNpmRegistryDialog] = useState<NpmRegistryDialogState>(EMPTY_NPM_REGISTRY_DIALOG);
+  const [uvSourceDialog, setUvSourceDialog] = useState<UvSourceDialogState>(EMPTY_UV_SOURCE_DIALOG);
+  const [terminalCountdown, setTerminalCountdown] = useState<InstallCountdownState | null>(null);
+  const [quickSetupLogTail, setQuickSetupLogTail] = useState<string | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>({
     open: false,
     title: "",
@@ -490,6 +677,7 @@ export function HomePage() {
   });
   const installPollTimerRef = useRef<number | null>(null);
   const terminalAutoCloseTimerRef = useRef<number | null>(null);
+  const terminalCountdownTimerRef = useRef<number | null>(null);
   const installPollExpectedRef = useRef<boolean | null>(null);
   const installAttemptContextRef = useRef<InstallAttemptContext | null>(null);
   const installLauncherRef = useRef<((key: CliKey, options?: InstallLaunchOptions) => Promise<void>) | null>(
@@ -500,12 +688,15 @@ export function HomePage() {
   const gitSourceResolveRef = useRef<((source: GitInstallSource | null) => void) | null>(null);
   const wingetSourceResolveRef = useRef<((source: WingetInstallMethod | null) => void) | null>(null);
   const npmRegistryResolveRef = useRef<((source: NpmRegistrySource | null) => void) | null>(null);
+  const uvSourceResolveRef = useRef<((source: UvInstallSourceDialogChoice | null) => void) | null>(null);
+  const installTimeoutsRef = useRef<InstallTimeoutConfig>(normalizeInstallTimeouts(DEFAULT_CONFIG.install_timeouts));
   const toastManager = Toast.useToastManager();
   const toastAddRef = useRef(toastManager.add);
   const configRef = useRef(config);
   const tauriWindow = useMemo(() => (hasTauriRuntime() ? getCurrentWindow() : null), []);
   toastAddRef.current = toastManager.add;
   configRef.current = config;
+  installTimeoutsRef.current = normalizeInstallTimeouts(config.install_timeouts);
 
   const appendTerminalPanelOutput = useCallback((text: string) => {
     if (!text) {
@@ -539,6 +730,64 @@ export function HomePage() {
     return host.__EXECLINK_TERMINAL_BUFFER__ ?? "";
   }, []);
 
+  const getTimeoutMs = useCallback((key: keyof InstallTimeoutConfig) => {
+    return installTimeoutsRef.current[key];
+  }, []);
+
+  const clearTerminalCountdownTimer = useCallback(() => {
+    if (terminalCountdownTimerRef.current !== null) {
+      window.clearInterval(terminalCountdownTimerRef.current);
+      terminalCountdownTimerRef.current = null;
+    }
+  }, []);
+
+  const stopTerminalCountdown = useCallback(() => {
+    clearTerminalCountdownTimer();
+    setTerminalCountdown(null);
+  }, [clearTerminalCountdownTimer]);
+
+  const startTerminalCountdown = useCallback(
+    (label: string, totalMs: number) => {
+      const safeTotal = Math.max(1000, Math.round(totalMs));
+      clearTerminalCountdownTimer();
+      const deadline = Date.now() + safeTotal;
+      setTerminalCountdown({
+        active: true,
+        label,
+        total_ms: safeTotal,
+        remaining_ms: safeTotal
+      });
+      terminalCountdownTimerRef.current = window.setInterval(() => {
+        const remaining = Math.max(0, deadline - Date.now());
+        setTerminalCountdown({
+          active: remaining > 0,
+          label,
+          total_ms: safeTotal,
+          remaining_ms: remaining
+        });
+        if (remaining <= 0) {
+          clearTerminalCountdownTimer();
+        }
+      }, 250);
+    },
+    [clearTerminalCountdownTimer]
+  );
+
+  const getTerminalBufferTail = useCallback((maxLines = 40) => {
+    const segment = getTerminalPanelBuffer();
+    const tail = segment
+      .split(/\r?\n/)
+      .filter((line) => line.trim().length > 0)
+      .slice(-maxLines)
+      .join("\n")
+      .trim();
+    return tail || null;
+  }, [getTerminalPanelBuffer]);
+
+  const refreshQuickSetupLogTail = useCallback(() => {
+    setQuickSetupLogTail(getTerminalBufferTail(40));
+  }, [getTerminalBufferTail]);
+
   const stopInstallPolling = useCallback(() => {
     if (installPollTimerRef.current !== null) {
       window.clearInterval(installPollTimerRef.current);
@@ -547,7 +796,8 @@ export function HomePage() {
     installPollExpectedRef.current = null;
     installAttemptContextRef.current = null;
     setInstallingKey(null);
-  }, []);
+    stopTerminalCountdown();
+  }, [stopTerminalCountdown]);
 
   useEffect(() => {
     return () => {
@@ -557,6 +807,9 @@ export function HomePage() {
       if (terminalAutoCloseTimerRef.current !== null) {
         window.clearTimeout(terminalAutoCloseTimerRef.current);
       }
+      if (terminalCountdownTimerRef.current !== null) {
+        window.clearInterval(terminalCountdownTimerRef.current);
+      }
     };
   }, []);
 
@@ -565,6 +818,7 @@ export function HomePage() {
     void (async () => {
       const unlistenOutput = await listen<TerminalOutputEvent>("terminal_output", (event) => {
         appendTerminalPanelOutput(event.payload.data);
+        refreshQuickSetupLogTail();
       });
 
       const unlistenState = await listen<TerminalStateEvent>("terminal_state", (event) => {
@@ -590,7 +844,7 @@ export function HomePage() {
       }
       terminalUnlistenRef.current = [];
     };
-  }, [appendTerminalPanelOutput]);
+  }, [appendTerminalPanelOutput, refreshQuickSetupLogTail]);
 
   const runWindowAction = useCallback(
     async (action: (win: TauriWindow) => Promise<void>) => {
@@ -677,6 +931,28 @@ export function HomePage() {
     }
   }, []);
 
+  const settleUvSourceDialog = useCallback((source: UvInstallSourceDialogChoice | null) => {
+    const resolver = uvSourceResolveRef.current;
+    uvSourceResolveRef.current = null;
+    setUvSourceDialog(EMPTY_UV_SOURCE_DIALOG);
+    if (resolver) {
+      resolver(source);
+    }
+  }, []);
+
+  const applyUvSourceDialogSelection = useCallback(
+    (source: UvInstallSourceDialogChoice | null) => {
+      if (source) {
+        setConfig((prev) => ({
+          ...prev,
+          uv_install_source_mode: source
+        }));
+      }
+      settleUvSourceDialog(source);
+    },
+    [settleUvSourceDialog]
+  );
+
   const requestConfirm = useCallback(
     (options: {
       title: string;
@@ -751,6 +1027,17 @@ export function HomePage() {
     });
   }, []);
 
+  const requestUvInstallSourceMode = useCallback(() => {
+    if (uvSourceResolveRef.current) {
+      uvSourceResolveRef.current(null);
+      uvSourceResolveRef.current = null;
+    }
+    return new Promise<UvInstallSourceDialogChoice | null>((resolve) => {
+      uvSourceResolveRef.current = resolve;
+      setUvSourceDialog({ open: true });
+    });
+  }, []);
+
   useEffect(() => {
     return () => {
       if (gitSourceResolveRef.current) {
@@ -778,11 +1065,21 @@ export function HomePage() {
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (uvSourceResolveRef.current) {
+        uvSourceResolveRef.current(null);
+        uvSourceResolveRef.current = null;
+      }
+    };
+  }, []);
+
   const refreshInitialState = useCallback(async () => {
     const state = await getInitialState();
     const normalizedConfig = normalizeLockedConfig({
       ...state.config,
-      cli_order: normalizeCliOrder(state.config.cli_order)
+      cli_order: normalizeCliOrder(state.config.cli_order),
+      install_timeouts: normalizeInstallTimeouts(state.config.install_timeouts)
     });
     setConfig(normalizedConfig);
     setStatuses(state.cli_status);
@@ -878,6 +1175,16 @@ export function HomePage() {
     }));
   }, []);
 
+  const setInstallTimeoutValueMs = useCallback((key: keyof InstallTimeoutConfig, nextValueMs: number) => {
+    setConfig((prev) => ({
+      ...prev,
+      install_timeouts: normalizeInstallTimeouts({
+        ...prev.install_timeouts,
+        [key]: nextValueMs
+      })
+    }));
+  }, []);
+
   const runAction = useCallback(async (fn: () => Promise<ActionResult>) => {
     setWorking(true);
     try {
@@ -924,6 +1231,7 @@ export function HomePage() {
     async (entry: WingetInstallEntry): Promise<boolean> => {
       const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
       const entryLabel = wingetInstallEntryLabel(entry);
+      const verifyTimeoutMs = getTimeoutMs("winget_install_recheck_timeout_ms");
       try {
         const prereq = await getInstallPrereqStatus();
         setInstallPrereq(prereq);
@@ -965,20 +1273,25 @@ export function HomePage() {
           return false;
         }
 
-        const startedAt = Date.now();
-        while (Date.now() - startedAt < WINGET_INSTALL_RECHECK_TIMEOUT_MS) {
-          await wait(INSTALL_RECHECK_INTERVAL_MS);
-          const next = await getInstallPrereqStatus();
-          setInstallPrereq(next);
-          if (next.winget) {
-            setLastResult({
-              ok: true,
-              code: "winget_install_ready",
-              message: "已检测到 winget，继续执行安装流程。",
-              detail: `入口：${entryLabel}；安装方式：${methodLabel}`
-            });
-            return true;
+        startTerminalCountdown("winget 安装复检", verifyTimeoutMs);
+        try {
+          const startedAt = Date.now();
+          while (Date.now() - startedAt < verifyTimeoutMs) {
+            await wait(INSTALL_RECHECK_INTERVAL_MS);
+            const next = await getInstallPrereqStatus();
+            setInstallPrereq(next);
+            if (next.winget) {
+              setLastResult({
+                ok: true,
+                code: "winget_install_ready",
+                message: "已检测到 winget，继续执行安装流程。",
+                detail: `入口：${entryLabel}；安装方式：${methodLabel}`
+              });
+              return true;
+            }
           }
+        } finally {
+          stopTerminalCountdown();
         }
 
         setLastResult({
@@ -999,7 +1312,7 @@ export function HomePage() {
         return false;
       }
     },
-    [promptOpenWingetInstallPage, requestWingetInstallMethod]
+    [getTimeoutMs, promptOpenWingetInstallPage, requestWingetInstallMethod, startTerminalCountdown, stopTerminalCountdown]
   );
 
   const ensurePs1PolicyReady = useCallback(
@@ -1083,6 +1396,7 @@ export function HomePage() {
 
   const closeEmbeddedTerminalSilently = useCallback(async () => {
     clearTerminalAutoCloseTimer();
+    stopTerminalCountdown();
     try {
       await terminalCloseSession();
     } catch {
@@ -1091,8 +1405,9 @@ export function HomePage() {
       setTerminalState("idle");
       setFocusedCliKey(null);
       clearTerminalPanelBuffer();
+      setQuickSetupLogTail(null);
     }
-  }, [clearTerminalAutoCloseTimer, clearTerminalPanelBuffer]);
+  }, [clearTerminalAutoCloseTimer, clearTerminalPanelBuffer, stopTerminalCountdown]);
 
   const scheduleTerminalAutoClose = useCallback(
     (delayMs = 3000) => {
@@ -1113,7 +1428,12 @@ export function HomePage() {
   );
 
   const runTerminalScriptAndWait = useCallback(
-    async (label: string, script: string, timeoutMs = INSTALL_RECHECK_TIMEOUT_MS): Promise<ActionResult> => {
+    async (
+      label: string,
+      script: string,
+      timeoutMs = getTimeoutMs("terminal_script_timeout_ms"),
+      countdownLabel?: string
+    ): Promise<ActionResult> => {
       const marker = `execlink_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const baselineBuffer = getTerminalPanelBuffer();
       const baselineLength = baselineBuffer.length;
@@ -1137,53 +1457,54 @@ export function HomePage() {
         "}"
       ].join("; ");
 
-      const submitResult = await terminalRunScript(wrappedScript);
-      if (!submitResult.ok) {
-        return {
-          ...submitResult,
-          code: "terminal_script_submit_failed",
-          message: `${label} 写入终端失败`
-        };
-      }
-
-      const okToken = `[ExecLink][Result][${marker}][OK]`;
-      const failToken = `[ExecLink][Result][${marker}][FAIL]`;
-      const errorToken = `[ExecLink][Error][${marker}]`;
-      const deadline = Date.now() + timeoutMs;
-      while (Date.now() < deadline) {
-        const currentBuffer = getTerminalPanelBuffer();
-        const segment = currentBuffer.length >= baselineLength ? currentBuffer.slice(baselineLength) : currentBuffer;
-        if (segment.includes(okToken)) {
+      startTerminalCountdown(countdownLabel ?? label, timeoutMs);
+      try {
+        const submitResult = await terminalRunScript(wrappedScript);
+        if (!submitResult.ok) {
           return {
-            ok: true,
-            code: "terminal_script_completed",
-            message: `${label} 执行成功`,
-            detail: script
+            ...submitResult,
+            code: "terminal_script_submit_failed",
+            message: `${label} 写入终端失败`
           };
         }
-        if (segment.includes(failToken)) {
-          const errorIndex = segment.lastIndexOf(errorToken);
-          let detail: string | null = null;
-          if (errorIndex >= 0) {
-            const errorText = segment.slice(errorIndex + errorToken.length).trimStart();
-            const firstLine = errorText.split(/\r?\n/, 1)[0]?.trim();
-            detail = firstLine ? firstLine : null;
+
+        const okToken = `[ExecLink][Result][${marker}][OK]`;
+        const failToken = `[ExecLink][Result][${marker}][FAIL]`;
+        const errorToken = `[ExecLink][Error][${marker}]`;
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          const currentBuffer = getTerminalPanelBuffer();
+          const segment = currentBuffer.length >= baselineLength ? currentBuffer.slice(baselineLength) : currentBuffer;
+          if (segment.includes(okToken)) {
+            refreshQuickSetupLogTail();
+            return {
+              ok: true,
+              code: "terminal_script_completed",
+              message: `${label} 执行成功`,
+              detail: script
+            };
           }
-          return {
-            ok: false,
-            code: "terminal_script_runtime_failed",
-            message: `${label} 执行失败`,
-            detail: detail ?? `${label} failed in embedded terminal.`
-          };
+          if (segment.includes(failToken)) {
+            const errorIndex = segment.lastIndexOf(errorToken);
+            let detail: string | null = null;
+            if (errorIndex >= 0) {
+              const errorText = segment.slice(errorIndex + errorToken.length).trimStart();
+              const firstLine = errorText.split(/\r?\n/, 1)[0]?.trim();
+              detail = firstLine ? firstLine : null;
+            }
+            const finalDetail = buildNetworkErrorHint(detail ?? `${label} failed in embedded terminal.`);
+            refreshQuickSetupLogTail();
+            return {
+              ok: false,
+              code: "terminal_script_runtime_failed",
+              message: `${label} 执行失败`,
+              detail: finalDetail
+            };
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 250));
         }
-        await new Promise((resolve) => window.setTimeout(resolve, 250));
-      }
 
-      return {
-        ok: false,
-        code: "terminal_script_result_timeout",
-        message: `${label} 执行超时`,
-        detail: (() => {
+        const timeoutDetail = (() => {
           const currentBuffer = getTerminalPanelBuffer();
           const segment = currentBuffer.length >= baselineLength ? currentBuffer.slice(baselineLength) : currentBuffer;
           const tail = segment
@@ -1196,10 +1517,19 @@ export function HomePage() {
             return `未在 ${Math.round(timeoutMs / 1000)} 秒内收到终端结果标记。`;
           }
           return `未在 ${Math.round(timeoutMs / 1000)} 秒内收到终端结果标记。\n最近终端输出：\n${tail}`;
-        })()
-      };
+        })();
+        refreshQuickSetupLogTail();
+        return {
+          ok: false,
+          code: "terminal_script_result_timeout",
+          message: `${label} 执行超时`,
+          detail: timeoutDetail
+        };
+      } finally {
+        stopTerminalCountdown();
+      }
     },
-    [getTerminalPanelBuffer]
+    [getTerminalPanelBuffer, getTimeoutMs, refreshQuickSetupLogTail, startTerminalCountdown, stopTerminalCountdown]
   );
 
   const runTerminalCommandsSequentially = useCallback(
@@ -1338,6 +1668,8 @@ export function HomePage() {
       installPollExpectedRef.current = expectedDetected;
       installAttemptContextRef.current = { key, expectedDetected, mode };
       setInstallingKey(key);
+      const installRecheckTimeoutMs = getTimeoutMs("install_recheck_timeout_ms");
+      startTerminalCountdown(`${CLI_DEFAULT_TITLES[key]} ${expectedDetected ? "安装" : "卸载"}复检`, installRecheckTimeoutMs);
       const startedAt = Date.now();
 
       installPollTimerRef.current = window.setInterval(() => {
@@ -1362,7 +1694,7 @@ export function HomePage() {
               return;
             }
 
-            if (Date.now() - startedAt >= INSTALL_RECHECK_TIMEOUT_MS) {
+            if (Date.now() - startedAt >= installRecheckTimeoutMs) {
               const attemptContext = installAttemptContextRef.current;
               installAttemptContextRef.current = null;
               stopInstallPolling();
@@ -1405,9 +1737,11 @@ export function HomePage() {
       }, INSTALL_RECHECK_INTERVAL_MS);
     },
     [
+      getTimeoutMs,
       refreshCliUserPathStatuses,
       requestMirrorFallbackRetry,
       scheduleTerminalAutoClose,
+      startTerminalCountdown,
       stopInstallPolling,
       syncMenuAfterCliChange
     ]
@@ -1465,13 +1799,16 @@ export function HomePage() {
       setLastResult(elevated);
       if (!elevated.ok) {
         const recheck = await ensureNilesoftInstalled();
-        setInstall((prev) => ({
-          ...prev,
-          ...recheck,
-          registered: false,
-          needs_elevation: true
-        }));
-        return;
+        setInstall((prev) => ({ ...prev, ...recheck }));
+        if (!recheck.registered || recheck.needs_elevation) {
+          return;
+        }
+        setLastResult({
+          ok: true,
+          code: "register_elevated_recheck_ok",
+          message: "提权命令返回异常，但复检确认注册成功",
+          detail: elevated.detail ?? recheck.message
+        });
       }
 
       const state = await refreshInitialState();
@@ -1740,7 +2077,8 @@ export function HomePage() {
         `WSL: ${prereq.wsl ? "✅" : "❌"}`
       ];
 
-      const baseInstallCommand = buildInstallCommandForMode(key, hint.install_command, mode);
+      const uvSourceMode = configRef.current.uv_install_source_mode ?? "auto";
+      const baseInstallCommand = buildInstallCommandForMode(key, hint.install_command, mode, uvSourceMode);
       let selectedNpmRegistrySource = options?.npmRegistrySource;
       if (!selectedNpmRegistrySource && shouldPromptNpmRegistry(baseInstallCommand)) {
         const npmRegistrySource = await requestNpmRegistrySource(
@@ -1776,6 +2114,7 @@ export function HomePage() {
               mirrorMode && isKimiInstall ? `Python 安装器镜像: ${KIMI_TUNA_PYTHON_INSTALLER_URL}` : "",
               mirrorMode && isKimiInstall ? `Python 安装器回退: ${KIMI_ALIYUN_PYTHON_INSTALLER_URL}` : "",
               mirrorMode && isKimiInstall ? `Python 目标版本: ${KIMI_TARGET_PYTHON_PATCH_VERSION}` : "",
+              mirrorMode && isKimiInstall ? `uv 安装源策略: ${uvSourceMode}` : "",
               mirrorMode && isKimiInstall ? "将先检测 uv；如缺失将自动安装 uv，再执行 uv 安装 Kimi CLI。" : "",
               `\n命令:\n${effectiveInstallCommand}`,
               `\n来源域名: ${hint.official_domain}`,
@@ -1846,7 +2185,12 @@ export function HomePage() {
           `${hint.display_name} 安装命令${mirrorMode ? "（清华源）" : "（官方源）"}`,
           effectiveInstallCommand
         );
-        const result = await terminalRunScript(effectiveInstallCommand);
+        const result = await runTerminalScriptAndWait(
+          `${hint.display_name} 安装命令`,
+          effectiveInstallCommand,
+          getTimeoutMs("terminal_script_timeout_ms"),
+          `${hint.display_name} 安装命令`
+        );
         setLastResult(result);
         if (result.ok) {
           startInstallRecheck(key, true, mode);
@@ -1867,9 +2211,11 @@ export function HomePage() {
       ensureWingetBeforeCliInstall,
       ensurePs1PolicyReady,
       emitTerminalScriptPreview,
+      getTimeoutMs,
       installHints,
       requestConfirm,
       requestNpmRegistrySource,
+      runTerminalScriptAndWait,
       startInstallRecheck
     ]
   );
@@ -1972,7 +2318,12 @@ export function HomePage() {
         }
         setTerminalState("running");
         emitTerminalScriptPreview(`${displayName} 升级命令`, upgradeCommand);
-        const upgradeResult = await terminalRunScript(upgradeCommand);
+        const upgradeResult = await runTerminalScriptAndWait(
+          `${displayName} 升级命令`,
+          upgradeCommand,
+          getTimeoutMs("terminal_script_timeout_ms"),
+          `${displayName} 升级命令`
+        );
         if (!upgradeResult.ok) {
           setLastResult(upgradeResult);
           return;
@@ -2012,10 +2363,12 @@ export function HomePage() {
       clearTerminalAutoCloseTimer,
       ensurePs1PolicyReady,
       emitTerminalScriptPreview,
+      getTimeoutMs,
       installHints,
       refreshCliUserPathStatuses,
       requestConfirm,
       requestNpmRegistrySource,
+      runTerminalScriptAndWait,
       scheduleTerminalAutoClose
     ]
   );
@@ -2070,7 +2423,12 @@ export function HomePage() {
         }
         setTerminalState("running");
         emitTerminalScriptPreview(`${displayName} 卸载命令`, uninstallCommand);
-        const result = await terminalRunScript(uninstallCommand);
+        const result = await runTerminalScriptAndWait(
+          `${displayName} 卸载命令`,
+          uninstallCommand,
+          getTimeoutMs("terminal_script_timeout_ms"),
+          `${displayName} 卸载命令`
+        );
         setLastResult(result);
         if (result.ok) {
           startInstallRecheck(key, false);
@@ -2086,7 +2444,15 @@ export function HomePage() {
         setWorking(false);
       }
     },
-    [clearTerminalAutoCloseTimer, emitTerminalScriptPreview, installHints, requestConfirm, startInstallRecheck]
+    [
+      clearTerminalAutoCloseTimer,
+      emitTerminalScriptPreview,
+      getTimeoutMs,
+      installHints,
+      requestConfirm,
+      runTerminalScriptAndWait,
+      startInstallRecheck
+    ]
   );
 
   const setQuickPhase = useCallback(
@@ -2117,6 +2483,7 @@ export function HomePage() {
 
       clearTerminalAutoCloseTimer();
       setFocusedCliKey(key);
+      setQuickSetupLogTail(null);
       setQuickSetup({
         key,
         phase: "precheck",
@@ -2155,6 +2522,10 @@ export function HomePage() {
 
       try {
         const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+        const scriptTimeoutMs = getTimeoutMs("terminal_script_timeout_ms");
+        const quickDetectTimeoutMs = getTimeoutMs("quick_setup_detect_timeout_ms");
+        const mirrorProbeTimeoutMs = getTimeoutMs("mirror_probe_timeout_ms");
+        const pythonRuntimeCheckTimeoutMs = getTimeoutMs("python_runtime_check_timeout_ms");
 
         setQuickPhase("precheck", "检查安装前置环境...");
         const prereq = await getInstallPrereqStatus();
@@ -2231,12 +2602,32 @@ export function HomePage() {
         if (isKimiMirrorInstallKey(key)) {
           let uvReady = prereq.uv;
           if (!uvReady) {
-            const uvBootstrapCommands = buildKimiUvBootstrapCommands();
+            setQuickPhase("choose_source", "请选择 uv 安装源策略...");
+            const selectedUvSourceMode = await requestUvInstallSourceMode();
+            if (!selectedUvSourceMode) {
+              setQuickSetup({
+                key,
+                phase: "failed",
+                running: false,
+                message: "已取消快速安装向导",
+                detail: "已取消 uv 安装源选择。"
+              });
+              setLastResult({
+                ok: false,
+                code: "quick_setup_cancelled",
+                message: "已取消快速安装向导",
+                detail: "已取消 uv 安装源选择。"
+              });
+              return;
+            }
+
+            const uvBootstrapCommands = buildKimiUvBootstrapCommands(selectedUvSourceMode);
             const uvBootstrapCommand = uvBootstrapCommands.join("\n");
             const acceptedUvInstall = await requestConfirm({
               title: "确认执行 uv 安装命令",
               message: [
                 "未检测到 uv，快速安装向导将执行以下命令安装并复检：",
+                `\n当前 uv 安装源策略：${selectedUvSourceMode}`,
                 `\n${uvBootstrapCommand}`,
                 "\n以上命令将写入内置终端执行，是否继续？"
               ].join("\n"),
@@ -2281,20 +2672,60 @@ export function HomePage() {
               });
               return;
             }
+
+            setQuickPhase("install_uv", "uv 安装完成，正在重启内置终端会话...");
+            const closed = await terminalCloseSession();
+            if (!closed.ok) {
+              setQuickSetup({
+                key,
+                phase: "failed",
+                running: false,
+                message: "uv 安装后终端重启失败",
+                detail: closed.detail ?? null
+              });
+              setLastResult({
+                ...closed,
+                code: "uv_terminal_restart_failed",
+                message: "uv 安装后终端重启失败"
+              });
+              return;
+            }
+            const reEnsured = await terminalEnsureSession();
+            if (!reEnsured.ok) {
+              setQuickSetup({
+                key,
+                phase: "failed",
+                running: false,
+                message: "uv 安装后终端重启失败",
+                detail: reEnsured.detail ?? null
+              });
+              setLastResult({
+                ...reEnsured,
+                code: "uv_terminal_restart_failed",
+                message: "uv 安装后终端重启失败"
+              });
+              return;
+            }
+            setTerminalState("running");
           } else {
             setQuickPhase("precheck_uv", "已检测到 uv，跳过安装步骤。");
           }
 
           setQuickPhase("verify_uv", "正在检测 uv 是否可用...");
-          const uvStartedAt = Date.now();
-          while (Date.now() - uvStartedAt < QUICK_SETUP_DETECT_TIMEOUT_MS) {
-            const nextPrereq = await getInstallPrereqStatus();
-            setInstallPrereq(nextPrereq);
-            if (nextPrereq.uv) {
-              uvReady = true;
-              break;
+          startTerminalCountdown("uv 安装复检", quickDetectTimeoutMs);
+          try {
+            const uvStartedAt = Date.now();
+            while (Date.now() - uvStartedAt < quickDetectTimeoutMs) {
+              const nextPrereq = await getInstallPrereqStatus();
+              setInstallPrereq(nextPrereq);
+              if (nextPrereq.uv) {
+                uvReady = true;
+                break;
+              }
+              await wait(INSTALL_RECHECK_INTERVAL_MS);
             }
-            await wait(INSTALL_RECHECK_INTERVAL_MS);
+          } finally {
+            stopTerminalCountdown();
           }
 
           if (!uvReady) {
@@ -2349,7 +2780,7 @@ export function HomePage() {
               ? await runTerminalScriptAndWait(
                   `Python ${KIMI_TARGET_PYTHON_VERSION} 运行时预检`,
                   pythonRuntimeCheckCommand,
-                  PYTHON_RUNTIME_CHECK_TIMEOUT_MS
+                  pythonRuntimeCheckTimeoutMs
                 )
               : await verifyKimiPythonInstallation();
           if (!initialPythonVerify.ok) {
@@ -2404,7 +2835,7 @@ export function HomePage() {
                 const probeResult = await runTerminalScriptAndWait(
                   `Python 镜像探测（${mirrorUrl}）`,
                   probeCommand,
-                  MIRROR_PROBE_TIMEOUT_MS
+                  mirrorProbeTimeoutMs
                 );
                 if (!probeResult.ok) {
                   failureDetails.push(`[probe] ${mirrorUrl} => ${probeResult.detail ?? probeResult.message}`);
@@ -2480,7 +2911,7 @@ export function HomePage() {
               const runtimeVerifyResult = await runTerminalScriptAndWait(
                 `Python ${KIMI_TARGET_PYTHON_VERSION} 运行时检测`,
                 pythonRuntimeCheckCommand,
-                PYTHON_RUNTIME_CHECK_TIMEOUT_MS
+                pythonRuntimeCheckTimeoutMs
               );
               if (!runtimeVerifyResult.ok) {
                 setQuickSetup({
@@ -2503,14 +2934,19 @@ export function HomePage() {
               const pythonStartedAt = Date.now();
               let pythonDetected = false;
               let lastPythonVerifyDetail: string | null = initialPythonVerify.detail ?? null;
-              while (Date.now() - pythonStartedAt < QUICK_SETUP_DETECT_TIMEOUT_MS) {
-                const verify = await verifyKimiPythonInstallation();
-                lastPythonVerifyDetail = verify.detail ?? null;
-                if (verify.ok) {
-                  pythonDetected = true;
-                  break;
+              startTerminalCountdown(`Python ${KIMI_TARGET_PYTHON_VERSION} 安装复检`, quickDetectTimeoutMs);
+              try {
+                while (Date.now() - pythonStartedAt < quickDetectTimeoutMs) {
+                  const verify = await verifyKimiPythonInstallation();
+                  lastPythonVerifyDetail = verify.detail ?? null;
+                  if (verify.ok) {
+                    pythonDetected = true;
+                    break;
+                  }
+                  await wait(INSTALL_RECHECK_INTERVAL_MS);
                 }
-                await wait(INSTALL_RECHECK_INTERVAL_MS);
+              } finally {
+                stopTerminalCountdown();
               }
 
               if (!pythonDetected) {
@@ -2581,7 +3017,7 @@ export function HomePage() {
               const probeResult = await runTerminalScriptAndWait(
                 `Kimi 索引探测（${indexUrl}）`,
                 probeCommand,
-                MIRROR_PROBE_TIMEOUT_MS
+                mirrorProbeTimeoutMs
               );
               if (!probeResult.ok) {
                 failureDetails.push(`[probe] ${indexUrl} => ${probeResult.detail ?? probeResult.message}`);
@@ -2642,14 +3078,19 @@ export function HomePage() {
           const kimiStartedAt = Date.now();
           let kimiDetected = false;
           let lastVerifyDetail: string | null = null;
-          while (Date.now() - kimiStartedAt < QUICK_SETUP_DETECT_TIMEOUT_MS) {
-            const verify = await verifyKimiInstallation();
-            lastVerifyDetail = verify.detail ?? null;
-            if (verify.ok) {
-              kimiDetected = true;
-              break;
+          startTerminalCountdown("Kimi 安装复检", quickDetectTimeoutMs);
+          try {
+            while (Date.now() - kimiStartedAt < quickDetectTimeoutMs) {
+              const verify = await verifyKimiInstallation();
+              lastVerifyDetail = verify.detail ?? null;
+              if (verify.ok) {
+                kimiDetected = true;
+                break;
+              }
+              await wait(INSTALL_RECHECK_INTERVAL_MS);
             }
-            await wait(INSTALL_RECHECK_INTERVAL_MS);
+          } finally {
+            stopTerminalCountdown();
           }
 
           if (!kimiDetected) {
@@ -2732,7 +3173,12 @@ export function HomePage() {
           return;
         }
 
-        const quickInstallBaseCommand = buildInstallCommandForMode(key, hint.install_command, "official");
+        const quickInstallBaseCommand = buildInstallCommandForMode(
+          key,
+          hint.install_command,
+          "official",
+          configRef.current.uv_install_source_mode ?? "auto"
+        );
         let quickInstallCommand = quickInstallBaseCommand;
         if (shouldPromptNpmRegistry(quickInstallBaseCommand)) {
           const selectedNpmRegistrySource = await requestNpmRegistrySource(
@@ -2759,7 +3205,12 @@ export function HomePage() {
         }
         setQuickPhase("install", "正在执行安装命令...");
         emitTerminalScriptPreview(`${hint.display_name} 安装命令`, quickInstallCommand);
-        const installScriptResult = await terminalRunScript(quickInstallCommand);
+        const installScriptResult = await runTerminalScriptAndWait(
+          `${hint.display_name} 安装命令`,
+          quickInstallCommand,
+          scriptTimeoutMs,
+          `${hint.display_name} 安装命令`
+        );
         if (!installScriptResult.ok) {
           setQuickSetup({
             key,
@@ -2781,13 +3232,18 @@ export function HomePage() {
         setQuickPhase("detect", "等待安装检测结果...");
         const startedAt = Date.now();
         let detected = false;
-        while (Date.now() - startedAt < QUICK_SETUP_DETECT_TIMEOUT_MS) {
-          const verify = await runCliVerify(key);
-          if (verify.ok) {
-            detected = true;
-            break;
+        startTerminalCountdown(`${hint.display_name} 安装复检`, quickDetectTimeoutMs);
+        try {
+          while (Date.now() - startedAt < quickDetectTimeoutMs) {
+            const verify = await runCliVerify(key);
+            if (verify.ok) {
+              detected = true;
+              break;
+            }
+            await new Promise((resolve) => window.setTimeout(resolve, INSTALL_RECHECK_INTERVAL_MS));
           }
-          await new Promise((resolve) => window.setTimeout(resolve, INSTALL_RECHECK_INTERVAL_MS));
+        } finally {
+          stopTerminalCountdown();
         }
 
         if (!detected) {
@@ -2902,9 +3358,11 @@ export function HomePage() {
       ensureWingetBeforeCliInstall,
       ensurePs1PolicyReady,
       emitTerminalScriptPreview,
+      getTimeoutMs,
       installHints,
       requestConfirm,
       requestNpmRegistrySource,
+      requestUvInstallSourceMode,
       refreshCliUserPathStatuses,
       refreshInitialState,
       runAction,
@@ -2912,6 +3370,8 @@ export function HomePage() {
       runTerminalScriptAndWait,
       scheduleTerminalAutoClose,
       setQuickPhase,
+      startTerminalCountdown,
+      stopTerminalCountdown,
       verifyKimiInstallation
     ]
   );
@@ -2956,7 +3416,8 @@ export function HomePage() {
     }
     const payload = normalizeLockedConfig({
       ...config,
-      cli_order: normalizeCliOrder(config.cli_order)
+      cli_order: normalizeCliOrder(config.cli_order),
+      install_timeouts: normalizeInstallTimeouts(config.install_timeouts)
     });
     const applyResult = await runAction(() => applyConfig(payload));
     if (!applyResult.ok) {
@@ -3169,7 +3630,9 @@ export function HomePage() {
 
   const onCloseQuickSetup = useCallback(() => {
     setQuickSetup(EMPTY_QUICK_SETUP);
-  }, []);
+    setQuickSetupLogTail(null);
+    stopTerminalCountdown();
+  }, [stopTerminalCountdown]);
 
   const onRetryQuickSetup = useCallback(() => {
     if (!quickSetup.key) {
@@ -3197,14 +3660,20 @@ export function HomePage() {
   const onCloseFocusedTerminal = useCallback(async () => {
     stopInstallPolling();
     clearTerminalAutoCloseTimer();
+    stopTerminalCountdown();
     const result = await terminalCloseSession();
     setLastResult(result);
     setTerminalState("idle");
     setFocusedCliKey(null);
     clearTerminalPanelBuffer();
-  }, [clearTerminalAutoCloseTimer, clearTerminalPanelBuffer, stopInstallPolling]);
+    setQuickSetupLogTail(null);
+  }, [clearTerminalAutoCloseTimer, clearTerminalPanelBuffer, stopInstallPolling, stopTerminalCountdown]);
 
   const orderedCliKeys = useMemo(() => normalizeCliOrder(config.cli_order), [config.cli_order]);
+  const effectiveInstallTimeouts = useMemo(
+    () => normalizeInstallTimeouts(config.install_timeouts),
+    [config.install_timeouts]
+  );
   const canOperate = install.installed && install.registered && !install.needs_elevation;
   const showPrereqInstallButton = !installPrereq.git || !installPrereq.node;
   const prereqInstallButtonLabel = useMemo(() => {
@@ -3395,6 +3864,8 @@ export function HomePage() {
               {quickSetup.key ? (
                 <QuickSetupWizard
                   status={quickSetup}
+                  countdown={terminalCountdown}
+                  logTail={quickSetupLogTail}
                   onClose={onCloseQuickSetup}
                   onRetry={onRetryQuickSetup}
                 />
@@ -3412,6 +3883,7 @@ export function HomePage() {
                 installingKey={installingKey}
                 focusedCliKey={focusedCliKey}
                 terminalState={terminalState}
+                terminalCountdown={terminalCountdown}
                 suppressTerminal={Boolean(quickSetup.key)}
                 onReorder={(nextOrder) =>
                   setConfig((prev) => ({
@@ -3471,6 +3943,63 @@ export function HomePage() {
                     </span>
                   </span>
                 </label>
+                <section className={`grid gap-3 rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${INSET_SMALL}`}>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="grid gap-0.5">
+                      <span className="text-sm font-semibold text-[var(--ui-text)]">uv 安装源策略</span>
+                      <span className="text-xs text-[var(--ui-muted)]">
+                        当前：{uvInstallSourceModeLabel(config.uv_install_source_mode)}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className={RUNTIME_SECONDARY_BUTTON_CLASS}
+                      disabled={working || loading}
+                      onClick={() => setUvSourceDialog({ open: true })}
+                    >
+                      选择策略
+                    </button>
+                  </div>
+                  <p className="text-xs text-[var(--ui-muted)]">
+                    自动策略会按 <code>winget -&gt; 官方脚本 -&gt; 清华镜像 -&gt; 阿里镜像</code> 依次回退。
+                  </p>
+                </section>
+                <section className={`grid gap-3 rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${INSET_SMALL}`}>
+                  <h3 className="text-sm font-semibold text-[var(--ui-text)]">安装超时（秒）</h3>
+                  <p className="text-xs text-[var(--ui-muted)]">
+                    所有安装流程都会显示倒计时，超时后会自动返回失败详情。范围超出会自动纠正到安全区间。
+                  </p>
+                  <div className="grid gap-2">
+                    {INSTALL_TIMEOUT_FIELDS.map((field) => {
+                      const bounds = INSTALL_TIMEOUT_BOUNDS[field.key];
+                      const valueSeconds = Math.round(effectiveInstallTimeouts[field.key] / 1000);
+                      return (
+                        <label key={field.key} className={FIELD_CLASS}>
+                          <span className="text-xs font-semibold text-[var(--ui-text)]">{field.title}</span>
+                          <span className="text-[11px] text-[var(--ui-muted)]">{field.description}</span>
+                          <input
+                            type="number"
+                            min={Math.round(bounds.min / 1000)}
+                            max={Math.round(bounds.max / 1000)}
+                            step={1}
+                            className={INPUT_CLASS}
+                            value={valueSeconds}
+                            onChange={(event) => {
+                              const next = Number.parseInt(event.target.value, 10);
+                              if (!Number.isFinite(next)) {
+                                return;
+                              }
+                              setInstallTimeoutValueMs(field.key, next * 1000);
+                            }}
+                          />
+                          <span className="text-[11px] text-[var(--ui-muted)]">
+                            范围：{Math.round(bounds.min / 1000)} ~ {Math.round(bounds.max / 1000)} 秒
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </section>
               </section>
               <details className={`rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${OUTSET_SMALL}`}>
                 <summary className="cursor-pointer select-none text-sm font-semibold text-[var(--ui-text)]">
@@ -3634,6 +4163,15 @@ export function HomePage() {
         onSelectOfficial={() => settleNpmRegistryDialog("official")}
         onSelectMirror={() => settleNpmRegistryDialog("npmmirror")}
         onCancel={() => settleNpmRegistryDialog(null)}
+      />
+
+      <UvInstallSourceDialog
+        open={uvSourceDialog.open}
+        onSelectAuto={() => applyUvSourceDialogSelection("auto")}
+        onSelectOfficial={() => applyUvSourceDialogSelection("official")}
+        onSelectTuna={() => applyUvSourceDialogSelection("tuna")}
+        onSelectAliyun={() => applyUvSourceDialogSelection("aliyun")}
+        onCancel={() => applyUvSourceDialogSelection(null)}
       />
 
       <AppConfirmDialog

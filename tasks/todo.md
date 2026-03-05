@@ -1,3 +1,51 @@
+# 2026-03-05 注册误报修复（maintenance_register_incomplete 误判）
+
+## 计划清单
+- [x] 修复注册成功但即时复检失败导致的误报
+- [x] 提升注册失败详情可读性（补充 exit code / stdout / stderr）
+- [x] 一键维护注册阶段加入“失败后复检成功继续流程”兜底
+- [x] 前端提权重试避免把已成功复检状态强制改回未注册
+- [x] 运行验证：`cargo test`、`npm run build`
+
+## 执行记录
+- `nilesoft_install::ensure_registration_points_to` 改为带超时轮询复检（8s/250ms），避免注册写入存在短暂延迟时误判失败。
+- `register_normal/register_elevated` 失败信息补齐 `exit code` 与 `stdout/stderr` 摘要，解决“提权注册失败: ”空白详情问题。
+- `one_click_install_repair` 注册阶段改为“命令失败后仍执行状态复检”，若复检已注册则继续 `apply/activate`，不再直接 `maintenance_register_incomplete` 中断。
+- `request_elevation_and_register` 增加“命令报错但复检成功则返回成功”的后端兜底码 `register_elevated_recheck_ok`。
+- 前端 `onRetryElevation` 修复：失败后复检若已注册，不再强制设为 `registered=false`，并回传成功提示。
+- 验证通过：
+- `cargo test --manifest-path src-tauri/Cargo.toml`（49/49）
+- `npm run build`
+
+## 回顾
+- 对涉及 UAC/注册表的系统操作，不应仅依赖进程即时返回码；必须叠加状态复检，避免“实际成功但前端提示失败”。
+- 前后端都应避免把“未知/异常”直接降级为“确定失败”，应优先做一次一致性复核。
+
+# 2026-03-05 右键菜单兼容修复（保留任务栏右键 + 桌面/盘符可用）
+
+## 计划清单
+- [x] 定位任务栏右键丢失与桌面/盘符不可用的配置根因
+- [x] 调整 Nilesoft 最小 `shell.nss`：补齐 taskbar 相关导入
+- [x] 扩展 AI 菜单作用类型，覆盖 `drive/back` 场景
+- [x] 扩展 HKCU 兜底菜单作用域到 `DesktopBackground/Drive`
+- [x] 补齐已安装目录缺失的 Nilesoft 资源文件（imports）回填
+- [x] 运行验证：`cargo check`、`cargo test`
+
+## 执行记录
+- `SHELL_NSS_MINIMAL` 新增 `theme.nss`、`images.nss`、`taskbar.nss` 导入，避免仅导入 `ai-clis.nss` 导致任务栏菜单链路不完整。
+- `render_ai_clis_nss` 的菜单类型从 `dir|back.dir` 扩展为 `dir|drive|back|back.dir`，覆盖盘符根目录与背景场景。
+- HKCU 脚本 `build_hkcu_menu_script/build_remove_hkcu_menu_script/build_list_hkcu_menu_groups_script` 增加：
+- `HKCU\\Software\\Classes\\DesktopBackground\\shell`
+- `HKCU\\Software\\Classes\\Drive\\shell`
+- `ensure_installed` 增加资源回填步骤：即使已存在 `shell.exe`，也会从 `nilesoft.zip` 补齐缺失文件（仅补缺，不覆盖已有文件）。
+- 验证通过：
+- `cargo check --manifest-path src-tauri/Cargo.toml`
+- `cargo test --manifest-path src-tauri/Cargo.toml`（49/49）
+
+## 回顾
+- 仅校验 `shell.exe` 存在不足以判定安装完整，Shell 扩展场景需要同时关注 `imports` 资源完整性。
+- 在 Windows 11 下，传统右键注册项与 shell 扩展都属于经典菜单链路，需明确“一级菜单”能力边界，避免用户误解。
+
 # 2026-03-03 更新安装文档（README + install_kimi）
 
 ## 计划清单
@@ -466,3 +514,70 @@
 ## Review
 - Patch release workflow completed end-to-end: version bump, git push, package build, and release publish are consistent.
 - Release now points to latest pushed commit and includes both Windows installer formats.
+
+# 2026-03-05 重新构建安装包
+
+## 计划清单
+- [x] 记录本次构建计划并确认执行步骤
+- [x] 执行版本同步校验（`npm run sync-version:check`）
+- [x] 执行安装包构建（`npm run tauri -- build`）
+- [x] 校验 MSI/NSIS 产物是否生成并记录路径
+- [x] 回填执行记录与回顾
+
+## 执行记录
+- 已读取 `package.json`、`README.md`、`docs/release_checklist.md`，确认安装包标准构建命令为 `npm run tauri -- build`。
+- 首次执行 `npm run sync-version:check` 失败：`src-tauri/tauri.conf.json` 与 `package.json` 版本不一致。
+- 已执行 `npm run sync-version` 修复版本漂移，并再次执行 `npm run sync-version:check` 通过（版本一致：`0.2.8`）。
+- 已执行 `npm run tauri -- build`，构建完成并生成 2 个安装包。
+- 产物校验：
+- `src-tauri/target/release/bundle/msi/ExecLink_0.2.8_x64_zh-CN.msi`（4509696 bytes，2026-03-05 13:12:18）
+- `src-tauri/target/release/bundle/nsis/ExecLink_0.2.8_x64-setup.exe`（3325303 bytes，2026-03-05 13:12:40）
+
+## 回顾
+- 打包前先跑 `sync-version:check` 可以提前暴露版本漂移，避免构建中途失败。
+- 当前新安装包已基于 `0.2.8` 成功生成，后续可直接用于分发或上传 Release。
+
+# 2026-03-05 UV 安装源扩展 + 分阶段超时 + 全流程倒计时
+
+## 计划清单
+- [x] 扩展配置类型：新增 `UvInstallSourceMode` 与 `InstallTimeoutConfig`（前后端 + 默认值 + 迁移）
+- [x] 新增 `UV` 安装源选择弹窗组件并接入 `Home.tsx`
+- [x] 重构 `Home.tsx` 的 uv 安装链路：官方/清华/阿里 + 自动回退 + 错误可读化
+- [x] 引入全局倒计时状态并覆盖安装/升级/卸载/快速向导全流程
+- [x] 实现 `uv` 安装成功后自动重启内置终端会话并继续后续步骤
+- [x] 更新 `QuickSetupWizard` 与 `TerminalPanel` 进度/倒计时展示
+- [x] 更新 `CliConfigTable` 透传倒计时状态到终端面板
+- [x] 更新 `install_kimi.md` 文档（uv 新源策略 + 超时/倒计时）
+- [x] 运行验证：`npm run build`、`cargo check --manifest-path src-tauri/Cargo.toml`、`cargo test --manifest-path src-tauri/Cargo.toml`
+- [x] 回填执行记录与回顾
+
+## 执行记录
+- 新增配置类型并前后端同步：
+- `src/types/config.ts` 增加 `UvInstallSourceMode`、`InstallTimeoutConfig`、`InstallCountdownState` 与 `DEFAULT_INSTALL_TIMEOUTS`。
+- `src-tauri/src/state.rs` 增加同名字段与默认值，将 `CONFIG_VERSION` 从 `8` 升级到 `9`，并新增迁移测试 `should_migrate_v8_config_and_fill_new_uv_timeout_fields`。
+- 新增 `src/components/UvInstallSourceDialog.tsx`，提供 `auto / official / tuna / aliyun` 策略选择。
+- `Home.tsx` 完成 uv 安装链路重构：
+- `buildEnsureUvCommandLines` 支持策略化步骤，自动链路为 `winget -> 官方脚本 -> 清华 -> 阿里`。
+- 镜像安装通过 `LatestRelease` 页面链接解析 `uv-x86_64-pc-windows-msvc.zip`，提取 `uv.exe` 后复检。
+- 对 `native_exit_code=-2147012867` 增加网络错误可读提示（0x80072EFD）。
+- `Home.tsx` 完成超时与倒计时改造：
+- 读取并应用 `config.install_timeouts`，所有关键流程改为分阶段超时。
+- 新增全局倒计时状态，`runTerminalScriptAndWait`、winget 复检、安装复检、快速向导复检均显示倒计时。
+- 快速向导新增“实时日志尾部（最近 40 行）”输出（终端隐藏时可见）。
+- `uv` 安装成功后新增自动终端重启：`terminalCloseSession -> terminalEnsureSession`，失败返回 `uv_terminal_restart_failed`。
+- 全流程接入等待结果标记：
+- 仅执行安装/升级/卸载/快速向导安装路径均改为 `runTerminalScriptAndWait`（保留结果标记与超时尾日志）。
+- UI 更新：
+- `QuickSetupWizard.tsx` 与 `TerminalPanel.tsx` 新增倒计时展示。
+- `CliConfigTable.tsx` 透传倒计时到终端面板。
+- 菜单页新增 uv 策略与 6 项超时配置输入（秒）。
+- 文档更新：`install_kimi.md` 已补充 uv 新源策略、自动回退链、终端重启说明和超时/倒计时说明。
+- 验证结果：
+- `npm run build` 通过。
+- `cargo check --manifest-path src-tauri/Cargo.toml` 通过。
+- `cargo test --manifest-path src-tauri/Cargo.toml` 通过（49 passed）。
+
+## 回顾
+- 将超时配置持久化到 `AppConfig` 后，安装链路可控性显著提升；下一步可以考虑增加“恢复默认超时”按钮降低配置成本。
+- 对联网安装链路做策略化回退 + 错误可读化，比单一路径重试更利于定位真实故障。
+- 倒计时与日志尾部的组合能有效避免“看不到进度/卡住无反馈”的体验问题。

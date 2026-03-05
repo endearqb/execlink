@@ -7,7 +7,8 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     process::Output,
-    time::{SystemTime, UNIX_EPOCH},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{path::BaseDirectory, AppHandle, Manager};
 use walkdir::WalkDir;
@@ -16,6 +17,8 @@ use zip::ZipArchive;
 const ZIP_NAME: &str = "nilesoft.zip";
 const REGISTER_STATE_NAME: &str = ".register-state.json";
 const NILESOFT_CLSID: &str = "{BAE3934B-8A6A-4BFB-81BD-3FC599A1BAF1}";
+const REGISTER_VERIFY_TIMEOUT: Duration = Duration::from_secs(8);
+const REGISTER_VERIFY_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone)]
 pub enum UnregisterResult {
@@ -212,21 +215,30 @@ fn ensure_registration_points_to(shell_exe: &Path) -> AppResult<()> {
     let expected_root = shell_exe
         .parent()
         .ok_or_else(|| format!("shell.exe 路径非法: {}", shell_exe.display()))?;
-    let Some(active_root) = registered_shell_root_dir() else {
-        return Err("注册后未检测到系统 ContextMenuHandler。".to_string());
-    };
-
     let expected_norm = normalize_path_for_compare(expected_root);
-    let active_norm = normalize_path_for_compare(&active_root);
-    if expected_norm == active_norm {
-        return Ok(());
+    let started = Instant::now();
+    let mut last_error = "注册后未检测到系统 ContextMenuHandler。".to_string();
+
+    loop {
+        if let Some(active_root) = registered_shell_root_dir() {
+            let active_norm = normalize_path_for_compare(&active_root);
+            if expected_norm == active_norm {
+                return Ok(());
+            }
+            last_error = format!(
+                "注册后系统路径仍不一致: active={} current={}",
+                active_root.display(),
+                expected_root.display()
+            );
+        }
+
+        if started.elapsed() >= REGISTER_VERIFY_TIMEOUT {
+            break;
+        }
+        thread::sleep(REGISTER_VERIFY_INTERVAL);
     }
 
-    Err(format!(
-        "注册后系统路径仍不一致: active={} current={}",
-        active_root.display(),
-        expected_root.display()
-    ))
+    Err(last_error)
 }
 
 fn merge_copy_dir_recursive_skip_existing(src: &Path, dest: &Path) -> AppResult<()> {
@@ -304,6 +316,35 @@ fn try_recover_install_root_from_registered_root(target_root: &Path) -> AppResul
         target_root.display()
     ));
     Ok(true)
+}
+
+fn unique_backfill_temp_dir() -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("execlink-nilesoft-backfill-{nanos}"))
+}
+
+fn backfill_missing_files_from_package(app: &AppHandle, target_root: &Path) -> AppResult<()> {
+    let zip_path = resolve_resource_zip(app)?;
+    let temp_root = unique_backfill_temp_dir();
+    fs::create_dir_all(&temp_root).map_err(|e| format!("创建临时修复目录失败: {e}"))?;
+
+    let backfill_result = (|| -> AppResult<()> {
+        unzip_to_dir(&zip_path, &temp_root)?;
+        merge_copy_dir_recursive_skip_existing(&temp_root, target_root)?;
+        Ok(())
+    })();
+
+    if let Err(error) = fs::remove_dir_all(&temp_root) {
+        logging::log_line(&format!(
+            "[install] cleanup backfill temp dir failed ({}): {error}",
+            temp_root.display()
+        ));
+    }
+
+    backfill_result
 }
 
 fn unzip_to_dir(zip_path: &Path, target: &Path) -> AppResult<()> {
@@ -393,8 +434,13 @@ pub fn register_normal(shell_exe: &Path) -> AppResult<()> {
         return Ok(());
     }
 
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    Err(format!("注册失败: {stderr}"))
+    let code = output.status.code().unwrap_or(-1);
+    let detail = command_output_detail(&output.stdout, &output.stderr);
+    if detail.is_empty() {
+        Err(format!("注册失败 (exit code={code})"))
+    } else {
+        Err(format!("注册失败 (exit code={code}): {detail}"))
+    }
 }
 
 pub fn register_elevated(shell_exe: &Path) -> AppResult<()> {
@@ -424,8 +470,13 @@ pub fn register_elevated(shell_exe: &Path) -> AppResult<()> {
         return Ok(());
     }
 
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    Err(format!("提权注册失败: {stderr}"))
+    let code = output.status.code().unwrap_or(-1);
+    let detail = command_output_detail(&output.stdout, &output.stderr);
+    if detail.is_empty() {
+        Err(format!("提权注册失败 (exit code={code})"))
+    } else {
+        Err(format!("提权注册失败 (exit code={code}): {detail}"))
+    }
 }
 
 pub fn attempt_unregister(shell_exe: &Path) -> AppResult<UnregisterResult> {
@@ -600,6 +651,12 @@ pub fn ensure_installed(app: &AppHandle) -> AppResult<InstallStatus> {
                 }
             }
         }
+    }
+
+    if let Err(error) = backfill_missing_files_from_package(app, &root) {
+        logging::log_line(&format!(
+            "[install] backfill missing package files skipped due to error: {error}"
+        ));
     }
 
     write_marker(&root)?;

@@ -7,7 +7,7 @@ use std::{
 };
 
 pub type AppResult<T> = Result<T, String>;
-pub const CONFIG_VERSION: u32 = 8;
+pub const CONFIG_VERSION: u32 = 9;
 const APP_DIR_NAME: &str = "execlink";
 const LEGACY_APP_DIR_NAME: &str = "AI-CLI-Switch";
 const KNOWN_CLI_KEYS: [&str; 7] = [
@@ -110,6 +110,45 @@ impl Default for PsPromptStyle {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UvInstallSourceMode {
+    Auto,
+    Official,
+    Tuna,
+    Aliyun,
+}
+
+impl Default for UvInstallSourceMode {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InstallTimeoutConfig {
+    pub terminal_script_timeout_ms: u32,
+    pub install_recheck_timeout_ms: u32,
+    pub quick_setup_detect_timeout_ms: u32,
+    pub mirror_probe_timeout_ms: u32,
+    pub python_runtime_check_timeout_ms: u32,
+    pub winget_install_recheck_timeout_ms: u32,
+}
+
+impl Default for InstallTimeoutConfig {
+    fn default() -> Self {
+        Self {
+            terminal_script_timeout_ms: 10 * 60 * 1000,
+            install_recheck_timeout_ms: 10 * 60 * 1000,
+            quick_setup_detect_timeout_ms: 5 * 60 * 1000,
+            mirror_probe_timeout_ms: 20 * 1000,
+            python_runtime_check_timeout_ms: 15 * 1000,
+            winget_install_recheck_timeout_ms: 3 * 60 * 1000,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -123,6 +162,8 @@ pub struct AppConfig {
     pub terminal_theme_id: String,
     pub terminal_theme_mode: TerminalThemeMode,
     pub ps_prompt_style: PsPromptStyle,
+    pub uv_install_source_mode: UvInstallSourceMode,
+    pub install_timeouts: InstallTimeoutConfig,
     pub advanced_menu_mode: bool,
     pub menu_theme_enabled: bool,
     // Backward-compatibility field kept for legacy config migration.
@@ -215,6 +256,8 @@ impl Default for AppConfig {
             terminal_theme_id: "vscode-dark-plus".to_string(),
             terminal_theme_mode: TerminalThemeMode::Auto,
             ps_prompt_style: PsPromptStyle::Basic,
+            uv_install_source_mode: UvInstallSourceMode::Auto,
+            install_timeouts: InstallTimeoutConfig::default(),
             advanced_menu_mode: false,
             menu_theme_enabled: false,
             use_windows_terminal: true,
@@ -535,6 +578,26 @@ fn normalize_cli_order(cli_order: &mut Vec<String>) {
     *cli_order = normalized;
 }
 
+fn clamp_timeout(value: u32, min: u32, max: u32) -> u32 {
+    value.clamp(min, max)
+}
+
+fn normalize_install_timeouts(timeouts: &mut InstallTimeoutConfig) {
+    // Keep timeout values within a safe, UI-friendly range.
+    timeouts.terminal_script_timeout_ms =
+        clamp_timeout(timeouts.terminal_script_timeout_ms, 30_000, 30 * 60 * 1000);
+    timeouts.install_recheck_timeout_ms =
+        clamp_timeout(timeouts.install_recheck_timeout_ms, 60_000, 30 * 60 * 1000);
+    timeouts.quick_setup_detect_timeout_ms =
+        clamp_timeout(timeouts.quick_setup_detect_timeout_ms, 60_000, 30 * 60 * 1000);
+    timeouts.mirror_probe_timeout_ms =
+        clamp_timeout(timeouts.mirror_probe_timeout_ms, 5_000, 120_000);
+    timeouts.python_runtime_check_timeout_ms =
+        clamp_timeout(timeouts.python_runtime_check_timeout_ms, 5_000, 180_000);
+    timeouts.winget_install_recheck_timeout_ms =
+        clamp_timeout(timeouts.winget_install_recheck_timeout_ms, 60_000, 15 * 60 * 1000);
+}
+
 fn normalize_config(mut config: AppConfig) -> AppConfig {
     if config.version < 3 {
         config.toggles.kimi_web = true;
@@ -561,6 +624,7 @@ fn normalize_config(mut config: AppConfig) -> AppConfig {
     normalize_text_field(&mut config.terminal_theme_id, "vscode-dark-plus");
     normalize_cli_order(&mut config.cli_order);
     normalize_display_names(&mut config.display_names);
+    normalize_install_timeouts(&mut config.install_timeouts);
     if config.version < 4 {
         config.show_nilesoft_default_menus = false;
     }
@@ -765,5 +829,46 @@ mod tests {
         assert!(normalized.toggles.opencode);
         assert_eq!(normalized.cli_order, default_cli_order());
         assert!(!normalized.show_nilesoft_default_menus);
+    }
+
+    #[test]
+    fn should_migrate_v8_config_and_fill_new_uv_timeout_fields() {
+        let legacy_v8 = r#"{
+            "version": 8,
+            "menu_title": "AI CLIs",
+            "terminal_mode": "wt",
+            "display_names": {
+                "claude": "Claude Code",
+                "codex": "Codex",
+                "gemini": "Gemini",
+                "kimi": "Kimi",
+                "kimi_web": "Kimi Web",
+                "qwencode": "Qwen Code",
+                "opencode": "OpenCode"
+            },
+            "toggles": {
+                "claude": true,
+                "codex": true,
+                "gemini": true,
+                "kimi": true,
+                "kimi_web": true,
+                "qwencode": true,
+                "opencode": true
+            }
+        }"#;
+
+        let parsed = serde_json::from_str::<AppConfig>(legacy_v8).unwrap();
+        let normalized = normalize_config(parsed);
+        assert_eq!(normalized.version, CONFIG_VERSION);
+        assert_eq!(normalized.uv_install_source_mode, UvInstallSourceMode::Auto);
+        assert_eq!(normalized.install_timeouts.terminal_script_timeout_ms, 10 * 60 * 1000);
+        assert_eq!(normalized.install_timeouts.install_recheck_timeout_ms, 10 * 60 * 1000);
+        assert_eq!(normalized.install_timeouts.quick_setup_detect_timeout_ms, 5 * 60 * 1000);
+        assert_eq!(normalized.install_timeouts.mirror_probe_timeout_ms, 20 * 1000);
+        assert_eq!(normalized.install_timeouts.python_runtime_check_timeout_ms, 15 * 1000);
+        assert_eq!(
+            normalized.install_timeouts.winget_install_recheck_timeout_ms,
+            3 * 60 * 1000
+        );
     }
 }

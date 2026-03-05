@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { type InstallCountdownState } from "../types/config";
 
 interface Props {
   state: string;
+  countdown: InstallCountdownState | null;
   onRunScript: (script: string) => void | Promise<void>;
   onEnsureReady: () => void | Promise<void>;
   onResize: (cols: number, rows: number) => void | Promise<void>;
@@ -54,6 +56,7 @@ function appendTerminalOutput(prev: string, incoming: string): string {
 
 export function TerminalPanel({
   state,
+  countdown,
   onRunScript,
   onEnsureReady,
   onResize,
@@ -93,6 +96,16 @@ export function TerminalPanel({
     void onResize(120, 30);
   }, [onEnsureReady, onResize]);
 
+  const formatCountdown = (remainingMs: number, totalMs: number) => {
+    const toClock = (valueMs: number) => {
+      const seconds = Math.max(0, Math.ceil(valueMs / 1000));
+      const minutes = Math.floor(seconds / 60);
+      const rest = seconds % 60;
+      return `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
+    };
+    return `${toClock(remainingMs)} / ${toClock(totalMs)}`;
+  };
+
   return (
     <section className="grid gap-2 rounded-[1.5rem] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 shadow-[6px_6px_12px_#d5d0c4,-6px_-6px_12px_#ffffff]">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -122,6 +135,14 @@ export function TerminalPanel({
           </button>
         </div>
       </div>
+
+      {countdown?.active ? (
+        <div className="rounded-xl border border-[#ddd5c9] bg-[#efe8dd] px-2.5 py-1.5 text-[11px] text-[#5f564d]">
+          <span className="font-semibold">{countdown.label}</span>
+          {" · "}
+          <span>倒计时 {formatCountdown(countdown.remaining_ms, countdown.total_ms)}</span>
+        </div>
+      ) : null}
 
       <pre
         ref={outputRef}
