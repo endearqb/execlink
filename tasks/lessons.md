@@ -18,3 +18,9 @@
 - 一键修复类流程的错误码应按阶段拆分（安装/注册/菜单同步），并在日志中明确阶段，避免通用失败码导致定位困难。
 - 对可能被系统占用的 shell 扩展文件（如 `shell.dll`），恢复逻辑禁止先 `remove_dir_all` 再复制；应改为“仅补齐缺失文件、保留已存在文件”的非破坏式恢复策略。
 - 涉及 UAC 提权和注册表写入的动作不能只看单次命令返回值；必须追加“短时间轮询复检”，并在复检成功时返回成功态，避免误报 `maintenance_register_incomplete`。
+- 手动“应用配置”必须严格尊重用户开关，禁止隐式按实时 CLI 检测结果裁剪菜单项；检测过滤仅用于安装/卸载后的自动同步路径。
+- 调整 Nilesoft 菜单 `type` 时，禁止同时组合同一族的父类型与子类型（如 `back` 与 `back.dir`）；否则会触发 “Property type and sub type cannot combine” 并导致 import 失效。
+- 对 `taskbar.nss` 这类功能性 import，禁止写入“仅注释占位”兜底；缺失时必须写入可执行 fallback（建议双 `menu(type=\"taskbar\")` 结构）或从资源包回填，否则会出现任务栏右键功能静默消失。
+- 当需求是“保留 Windows 原生任务栏右键”时，taskbar fallback 必须加 `vis=key.shift()`（或等价条件）避免默认接管；将自定义菜单降级为按键触发能力。
+- 当目标是“普通任务栏右键保持原生”时，`menu(mode="multiple")` 这类通用组必须显式加 `where=!window.is_taskbar`，否则即使 taskbar import 设了 `vis=key.shift()` 仍可能在任务栏被 Shell 接管。
+- `taskbar` 菜单仅加 `vis=key.shift()` 不能保证普通任务栏右键回到原生；还必须在 `settings.exclude.where` 加 `window.is_taskbar && !key.shift()` 级别的排除规则，避免被 Shell 空拦截。

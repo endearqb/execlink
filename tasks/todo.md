@@ -1,3 +1,121 @@
+# 2026-03-05 任务栏右键与折叠菜单回归修复（taskbar.nss 占位误伤）
+
+## 计划清单
+- [x] 定位“AI CLIs 出现但任务栏右键与折叠菜单消失”的根因。
+- [x] 修复 `taskbar.nss` 占位策略：缺失时写入可用 fallback，若检测到旧占位内容则自动升级。
+- [x] 在最小 `shell.nss` 中补回 `Pin/Unpin` 与 `more_options` 折叠菜单块。
+- [x] 新增回归测试覆盖 taskbar 占位升级与保留已有 taskbar 配置行为。
+- [x] 运行测试并对本机运行时文件执行即时修复。
+
+## 执行记录
+- 从 `C:\\Users\\Qian\\AppData\\Local\\execlink\\nilesoft-shell\\imports\\taskbar.nss` 确认该文件被写成占位注释，导致导入存在但无任务栏菜单定义。
+- `nilesoft.rs` 调整：
+- `REQUIRED_IMPORT_PLACEHOLDERS` 移除 `taskbar.nss` 占位生成。
+- 新增 `ensure_taskbar_import_file`：`taskbar.nss` 缺失/为空/命中占位标记时写入可用 fallback 内容。
+- `taskbar.nss` fallback 升级为双 `menu(type=\"taskbar\")` 结构（参考社区 issue #495 实践），避免“有导入无菜单定义”。
+- 新增日志可观测标签：
+- `taskbar_recovered_from_missing`
+- `taskbar_upgraded_from_placeholder`
+- `taskbar_preserved_custom`
+- `SHELL_NSS_MINIMAL` 补回：
+- `menu(mode=\"multiple\" title=\"Pin/Unpin\" image=icon.pin)`
+- `menu(mode=\"multiple\" title=title.more_options image=icon.more_options)`
+- 新增测试：
+- `should_upgrade_placeholder_taskbar_import_to_fallback`
+- `should_keep_existing_taskbar_import_if_not_placeholder`
+- `should_not_mix_back_and_back_dir_in_top_level_menu_type`
+- 验证结果：
+- `cargo test --manifest-path src-tauri/Cargo.toml should_upgrade_placeholder_taskbar_import_to_fallback -- --test-threads=1` 通过
+- `cargo test --manifest-path src-tauri/Cargo.toml nilesoft::tests -- --test-threads=1`（18/18 通过）
+- `cargo test --manifest-path src-tauri/Cargo.toml`（54/54 通过）
+- `npm run build`（通过）
+- 已对本机运行时文件执行热修：
+- `imports/taskbar.nss` 占位内容替换为可用 taskbar fallback
+- `shell.nss` 补回 `Pin/Unpin` 与 `more_options` 菜单块
+- 根据用户反馈“任务栏出现但非 Windows 原生菜单”，将 taskbar fallback 可见性调整为 `vis=key.shift()`：
+- 默认右键：走 Windows 原生任务栏菜单
+- `Shift + 右键`：显示 Nilesoft 自定义任务栏菜单
+- 新增回归测试：
+- `should_limit_taskbar_fallback_visibility_to_shift`
+- 验证结果补充：
+- `cargo test --manifest-path src-tauri/Cargo.toml nilesoft::tests::should_limit_taskbar_fallback_visibility_to_shift -- --test-threads=1` 通过
+- `cargo test --manifest-path src-tauri/Cargo.toml nilesoft::tests -- --test-threads=1`（19/19 通过）
+
+## 回顾
+- 对功能性 import（如 `taskbar.nss`）不能使用“空占位”兜底，否则会出现“文件存在但功能缺失”的隐性回归。
+- 最小化配置时应保留关键兼容菜单块（如 `more_options`），避免影响系统交互预期。
+
+# 2026-03-05 应用后 AI CLIs 分组不显示修复（Nilesoft type 组合冲突）
+
+## 计划清单
+- [x] 从 `shell.log` 定位“应用后菜单不显示”根因并提取关键报错。
+- [x] 修复 `ai-clis.nss` 顶层 menu 的 `type` 组合为 Nilesoft 合法写法。
+- [x] 增加回归测试，防止再次出现 `back` 与 `back.dir` 混用。
+- [x] 运行针对性测试验证修复结果。
+- [x] 回填执行记录与回顾。
+
+## 执行记录
+- 通过 `C:\\Users\\Qian\\AppData\\Local\\execlink\\nilesoft-shell\\shell.log` 确认最新报错：
+- `line[1] column[35], Property type and sub type cannot combine "ai-clis.nss"`。
+- 报错对应当前渲染内容：`menu(type='dir|drive|back|back.dir' ...)`，属于 `type` 与 `sub type` 组合冲突。
+- 已将顶层菜单类型修正为 `menu(type='dir|drive|back' ...)`，移除冲突的 `back.dir`。
+- 新增回归单测 `should_not_mix_back_and_back_dir_in_top_level_menu_type`，断言不再输出冲突组合。
+
+## 回顾
+- 该问题不是“保留右键折叠菜单”导致，而是 `ai-clis.nss` 语法冲突导致 Nilesoft 直接拒绝导入文件。
+- 对 Nilesoft `type` 变更应配套日志回归检查，避免“文件写入成功但运行时解析失败”的隐性故障。
+
+# 2026-03-05 版本 +0.0.1 与构建安装包（本次）
+
+## 计划清单
+- [x] 执行 `npm run bump:patch`，将版本提升 `+0.0.1` 并同步清单文件。
+- [x] 执行版本一致性校验 `npm run sync-version:check`。
+- [x] 执行安装包构建 `npm run tauri -- build`。
+- [x] 校验 MSI/NSIS 产物路径与时间戳。
+- [x] 回填执行记录与回顾。
+
+## 执行记录
+- 执行 `npm run bump:patch`，版本由 `0.2.8` 升级至 `0.2.9`。
+- `sync-version` 自动同步版本到：
+- `src-tauri/Cargo.toml`
+- `src-tauri/tauri.conf.json`
+- `src-tauri/wix/main.wxs`
+- 执行 `npm run sync-version:check`，校验通过（版本一致：`0.2.9`）。
+- 执行 `npm run tauri -- build`，构建成功，生成安装包：
+- `src-tauri/target/release/bundle/msi/ExecLink_0.2.9_x64_zh-CN.msi`（4521984 bytes，2026-03-05 22:17:55）
+- `src-tauri/target/release/bundle/nsis/ExecLink_0.2.9_x64-setup.exe`（3333649 bytes，2026-03-05 22:18:02）
+- 构建期间出现 1 条 Rust 编译警告：`filter_config_toggles_by_detection` 当前未被调用（不影响本次打包成功）。
+
+## 回顾
+- 采用 `bump:patch + sync-version + sync-version:check` 可以保持多版本清单一致，避免打包阶段才暴露版本漂移。
+- 当前 `0.2.9` 安装包（MSI/NSIS）已可用于后续发布流程。
+
+# 2026-03-05 应用配置后 AI CLIs 右键菜单不显示修复
+
+## 计划清单
+- [x] 后端 `apply_config` 改为按用户配置直接写入，不再在该路径执行检测过滤。
+- [x] 前端仅在自动同步菜单路径执行“按检测结果过滤”。
+- [x] `write_shell_nss` 写入前确保 `imports/theme.nss`、`imports/images.nss`、`imports/taskbar.nss` 缺失时自动补齐占位文件。
+- [x] 增加/调整测试覆盖上述行为，并运行 `cargo test` 与 `npm run build` 验证。
+- [x] 回填执行记录、回顾与 lessons 经验条目。
+
+## 执行记录
+- 后端 `apply_config` 移除 `detect_all_clis + filter_config_toggles_by_detection` 渲染过滤，改为按用户配置直接写入 `.nss`。
+- 保留后端 `filter_config_toggles_by_detection` 函数用于自动流程语义，不删除既有单测覆盖。
+- 前端新增 `filterConfigTogglesByDetection`，仅在 `syncMenuAfterCliChange -> applyMenuConfigWithFallback` 自动同步路径生效。
+- 手动“应用配置”、提权后同步、一键维护路径保持按用户配置写入（不引入检测过滤）。
+- `nilesoft::write_shell_nss` 写入前新增 `ensure_required_import_placeholders`：缺失时创建 `imports/theme.nss`、`imports/images.nss`、`imports/taskbar.nss` 占位文件（不覆盖已有文件）。
+- 新增单测：
+- `nilesoft::tests::should_create_required_import_placeholders_when_missing`
+- `nilesoft::tests::should_not_overwrite_existing_required_import_placeholders`
+- 验证结果：
+- `cargo test --manifest-path src-tauri/Cargo.toml`（51/51 passed）
+- `npm run build`（passed）
+
+## 回顾
+- 手动“应用配置”属于用户意图执行，不应被运行时检测结果隐式改写；自动同步可按检测结果做收敛。
+- `shell.nss` 的 import 链路依赖应做“缺失补齐、已有不覆盖”兜底，避免单文件缺失导致整菜单失效。
+
 # 2026-03-05 注册误报修复（maintenance_register_incomplete 误判）
 
 ## 计划清单
@@ -581,3 +699,50 @@
 - 将超时配置持久化到 `AppConfig` 后，安装链路可控性显著提升；下一步可以考虑增加“恢复默认超时”按钮降低配置成本。
 - 对联网安装链路做策略化回退 + 错误可读化，比单一路径重试更利于定位真实故障。
 - 倒计时与日志尾部的组合能有效避免“看不到进度/卡住无反馈”的体验问题。
+## 2026-03-05 taskbar native menu + no Shell group fix
+
+### Plan checklist
+- [x] Ensure normal taskbar right-click is not hijacked by minimal multiple groups.
+- [x] Keep `Shift + taskbar right-click` custom menu available.
+- [x] Remove `Shell` group title from taskbar fallback menu.
+- [x] Keep folder/desktop `AI CLIs` group behavior unchanged.
+- [x] Add regression tests and run Rust test suite.
+
+### Execution log
+- Updated `src-tauri/src/nilesoft.rs`:
+- `SHELL_NSS_MINIMAL` now adds `where=!window.is_taskbar` to:
+- `menu(mode="multiple" title="Pin/Unpin" ...)`
+- `menu(mode="multiple" title=title.more_options ...)`
+- `TASKBAR_NSS_FALLBACK` removed `title=app.name` from top taskbar menu, to avoid `Shell` group.
+- Added tests:
+- `should_exclude_minimal_multiple_groups_from_taskbar`
+- strengthened `should_limit_taskbar_fallback_visibility_to_shift` (assert no `title=app.name`)
+- Validation:
+- `cargo test --manifest-path src-tauri/Cargo.toml nilesoft::tests -- --test-threads=1` passed (20/20)
+- `cargo test --manifest-path src-tauri/Cargo.toml` passed (56/56)
+
+### Review
+- For taskbar compatibility, generic multiple groups must be explicitly excluded from taskbar scope.
+- Taskbar fallback should avoid forcing app-level title grouping unless user explicitly wants it.
+
+## 2026-03-05 taskbar native menu missing fix (exclude.where gate)
+
+### Plan checklist
+- [x] Ensure normal taskbar right-click fully falls back to Windows native menu.
+- [x] Keep `Shift + taskbar right-click` in Nilesoft custom path.
+- [x] Add regression assertion for shell-level taskbar exclusion rule.
+- [x] Hot-apply runtime config and restart Explorer for immediate verification.
+
+### Execution log
+- Updated `SHELL_NSS_MINIMAL` and `SHELL_NSS_WITH_DEFAULTS`:
+- `exclude.where = !process.is_explorer || (window.is_taskbar && !key.shift())`
+- This makes normal taskbar context excluded from Shell processing; only `Shift` keeps Shell taskbar handling active.
+- Added unit test:
+- `should_exclude_normal_taskbar_context_from_shell_handling`
+- Validation:
+- `cargo test --manifest-path src-tauri/Cargo.toml nilesoft::tests -- --test-threads=1` passed (21/21)
+- Hotfix applied to runtime `shell.nss`, then Explorer restarted.
+
+### Review
+- `vis=key.shift()` on taskbar menu alone is not enough to guarantee native fallback for normal taskbar right-click.
+- A shell-level exclusion gate is required to avoid empty-intercept behavior.

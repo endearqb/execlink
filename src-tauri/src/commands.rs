@@ -2136,9 +2136,7 @@ pub fn apply_config(config: AppConfig) -> ActionResult {
         }
     };
 
-    let detected = detect::detect_all_clis();
-    let render_config = filter_config_toggles_by_detection(&config, &detected);
-    let terminal_resolution = match nilesoft::apply_config(&resolved.root, &render_config) {
+    let terminal_resolution = match nilesoft::apply_config(&resolved.root, &config) {
         Ok(value) => value,
         Err(error) => {
             let _ = state::mark_runtime_error(format!("apply_config_failed: {error}"));
@@ -2156,7 +2154,7 @@ pub fn apply_config(config: AppConfig) -> ActionResult {
                 resolved.root.display(),
                 registered_root.display()
             ));
-            if let Err(error) = nilesoft::apply_config(&registered_root, &render_config) {
+            if let Err(error) = nilesoft::apply_config(&registered_root, &config) {
                 let _ = state::mark_runtime_error(format!("apply_registered_root_failed: {error}"));
                 return ActionResult::err(
                     "apply_registered_root_failed",

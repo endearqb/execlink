@@ -353,6 +353,22 @@ function normalizeLockedConfig(config: AppConfig): AppConfig {
   };
 }
 
+function filterConfigTogglesByDetection(config: AppConfig, detected: CliStatusMap): AppConfig {
+  return {
+    ...config,
+    toggles: {
+      ...config.toggles,
+      claude: config.toggles.claude && detected.claude,
+      codex: config.toggles.codex && detected.codex,
+      gemini: config.toggles.gemini && detected.gemini,
+      kimi: config.toggles.kimi && detected.kimi,
+      kimi_web: config.toggles.kimi_web && detected.kimi_web,
+      qwencode: config.toggles.qwencode && detected.qwencode,
+      opencode: config.toggles.opencode && detected.opencode
+    }
+  };
+}
+
 type UvInstallStepKey = "winget" | "official_script" | "tuna_mirror" | "aliyun_mirror";
 
 function buildKimiInstallCommand(useMirror: boolean, uvSourceMode: UvInstallSourceMode) {
@@ -1607,11 +1623,17 @@ export function HomePage() {
   );
 
   const syncMenuAfterCliChange = useCallback(
-    async (key: CliKey, detected: boolean) => {
+    async (key: CliKey, detected: boolean, detectedMap?: CliStatusMap) => {
       const payload = buildConfigWithCliDetected(configRef.current, key, detected);
       setConfig(payload);
+      const resolvedDetected = detectedMap ?? (await detectClis());
+      setStatuses(resolvedDetected);
+      const filteredPayload = filterConfigTogglesByDetection(payload, resolvedDetected);
 
-      const syncResult = await applyMenuConfigWithFallback(payload, detected ? "install" : "uninstall");
+      const syncResult = await applyMenuConfigWithFallback(
+        filteredPayload,
+        detected ? "install" : "uninstall"
+      );
       if (!syncResult.ok) {
         setLastResult(syncResult);
         return false;
@@ -1683,7 +1705,7 @@ export function HomePage() {
               stopInstallPolling();
               setWorking(true);
               try {
-                const synced = await syncMenuAfterCliChange(key, expectedDetected);
+                const synced = await syncMenuAfterCliChange(key, expectedDetected, next);
                 await refreshCliUserPathStatuses();
                 if (synced) {
                   scheduleTerminalAutoClose(3000);
@@ -1883,7 +1905,7 @@ export function HomePage() {
       ) {
         const detected = installPollExpectedRef.current === true;
         stopInstallPolling();
-        const synced = await syncMenuAfterCliChange(installingKey, detected);
+        const synced = await syncMenuAfterCliChange(installingKey, detected, next);
         if (synced) {
           scheduleTerminalAutoClose(3000);
         }
