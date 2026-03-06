@@ -4,31 +4,30 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, type Window as TauriWindow } from "@tauri-apps/api/window";
 import {
   addCliCommandDirToUserPath,
-  activateNow,
   applyConfig,
-  attemptUnregisterNilesoft,
+  cleanupNilesoftArtifacts,
   cleanupAppData,
+  disableWin11ClassicContextMenu,
   detectClis,
-  ensureNilesoftInstalled,
+  detectLegacyMenuArtifacts,
+  enableWin11ClassicContextMenu,
   getCliInstallHints,
   getCliUserPathStatuses,
   getInitialState,
   getInstallPrereqStatus,
   getPowershellPs1PolicyStatus,
-  listContextMenuGroupsHkcu,
+  listExeclinkContextMenus,
   launchCliAuth,
   launchPrereqInstall,
   launchWingetInstall,
-  oneClickInstallRepair,
-  oneClickUnregisterCleanup,
+  migrateLegacyHkcuMenuToV2,
   fixPowershellPs1Policy,
+  notifyShellChanged,
   openNodejsDownloadPage,
   openWingetInstallPage,
   openInstallDocs,
-  refreshExplorer,
-  removeContextMenuHkcu,
-  repairContextMenuHkcu,
-  requestElevationAndRegister,
+  removeAllExeclinkContextMenus,
+  restartExplorerFallback,
   runCliVerify,
   verifyKimiInstallation,
   verifyKimiPythonInstallation,
@@ -50,6 +49,7 @@ import appLogo from "../assets/excelink_logo.png";
 import {
   CLI_DEFAULT_ORDER,
   CLI_DEFAULT_TITLES,
+  type ContextMenuStatus,
   DEFAULT_CONFIG,
   normalizeCliOrder,
   type ActionResult,
@@ -59,16 +59,17 @@ import {
   type CliUserPathStatusMap,
   type CliStatusMap,
   type GitInstallSource,
-  type HkcuMenuGroup,
+  type InstalledMenuGroup,
   type InstallCountdownState,
   type InstallPrereqStatus,
   type InstallTimeoutConfig,
-  type InstallStatus,
+  type LegacyArtifact,
   type PowerShellPs1PolicyStatus,
   type QuickSetupPhase,
   type QuickSetupStatus,
   type TerminalOutputEvent,
   type TerminalStateEvent,
+  type Win11ClassicMenuStatus,
   type UvInstallSourceMode,
   DEFAULT_INSTALL_TIMEOUTS
 } from "../types/config";
@@ -84,13 +85,21 @@ const EMPTY_STATUS: CliStatusMap = {
   pwsh: false
 };
 
-const EMPTY_INSTALL: InstallStatus = {
-  installed: false,
-  registered: false,
-  needs_elevation: false,
-  message: "未初始化",
-  shell_exe: null,
-  config_root: null
+const EMPTY_CONTEXT_MENU_STATUS: ContextMenuStatus = {
+  applied: false,
+  enabled_roots: [],
+  has_legacy_artifacts: false,
+  requires_manual_refresh: false,
+  current_group_id: null,
+  current_group_title: null,
+  message: "未初始化"
+};
+
+const EMPTY_WIN11_CLASSIC_MENU_STATUS: Win11ClassicMenuStatus = {
+  enabled: false,
+  registry_path: "HKCU\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\\InprocServer32",
+  restart_recommended: true,
+  message: "未初始化"
 };
 
 const EMPTY_PREREQ: InstallPrereqStatus = {
@@ -346,10 +355,7 @@ function uvInstallSourceModeLabel(mode: UvInstallSourceMode) {
 function normalizeLockedConfig(config: AppConfig): AppConfig {
   return {
     ...config,
-    show_nilesoft_default_menus: false,
-    no_exit: true,
-    advanced_menu_mode: false,
-    menu_theme_enabled: false
+    no_exit: true
   };
 }
 
@@ -653,6 +659,22 @@ function hasTauriRuntime() {
   return typeof candidate.__TAURI_INTERNALS__?.invoke === "function";
 }
 
+function normalizeContextMenuStatus(status: ContextMenuStatus | null | undefined): ContextMenuStatus {
+  return {
+    ...EMPTY_CONTEXT_MENU_STATUS,
+    ...status
+  };
+}
+
+function normalizeWin11ClassicMenuStatus(
+  status: Win11ClassicMenuStatus | null | undefined
+): Win11ClassicMenuStatus {
+  return {
+    ...EMPTY_WIN11_CLASSIC_MENU_STATUS,
+    ...status
+  };
+}
+
 export function HomePage() {
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
@@ -661,15 +683,19 @@ export function HomePage() {
   const [installHints, setInstallHints] = useState<CliInstallHintMap>({});
   const [cliUserPathStatuses, setCliUserPathStatuses] = useState<CliUserPathStatusMap>(EMPTY_CLI_USER_PATH_STATUS);
   const [installPrereq, setInstallPrereq] = useState<InstallPrereqStatus>(EMPTY_PREREQ);
-  const [install, setInstall] = useState<InstallStatus>(EMPTY_INSTALL);
+  const [contextMenuStatus, setContextMenuStatus] = useState<ContextMenuStatus>(EMPTY_CONTEXT_MENU_STATUS);
+  const [win11ClassicMenuStatus, setWin11ClassicMenuStatus] = useState<Win11ClassicMenuStatus>(
+    EMPTY_WIN11_CLASSIC_MENU_STATUS
+  );
   const [installingKey, setInstallingKey] = useState<CliKey | null>(null);
   const [lastResult, setLastResult] = useState<ActionResult | null>(null);
   const [quickSetup, setQuickSetup] = useState<QuickSetupStatus>(EMPTY_QUICK_SETUP);
   const [focusedCliKey, setFocusedCliKey] = useState<CliKey | null>(null);
   const [terminalState, setTerminalState] = useState("idle");
-  const [hkcuGroups, setHkcuGroups] = useState<HkcuMenuGroup[]>([]);
-  const [selectedHkcuGroupKeys, setSelectedHkcuGroupKeys] = useState<string[]>([]);
-  const [loadingHkcuGroups, setLoadingHkcuGroups] = useState(false);
+  const [installedMenuGroups, setInstalledMenuGroups] = useState<InstalledMenuGroup[]>([]);
+  const [legacyArtifacts, setLegacyArtifacts] = useState<LegacyArtifact[]>([]);
+  const [selectedMenuGroupKeys, setSelectedMenuGroupKeys] = useState<string[]>([]);
+  const [loadingMenuGroups, setLoadingMenuGroups] = useState(false);
   const [windowBusy, setWindowBusy] = useState(false);
   const [usageGuideOpen, setUsageGuideOpen] = useState(false);
   const [gitSourceDialogOpen, setGitSourceDialogOpen] = useState(false);
@@ -1097,12 +1123,17 @@ export function HomePage() {
       cli_order: normalizeCliOrder(state.config.cli_order),
       install_timeouts: normalizeInstallTimeouts(state.config.install_timeouts)
     });
+    const contextMenuStatus = normalizeContextMenuStatus(state.context_menu_status);
+    const win11ClassicMenuStatus = normalizeWin11ClassicMenuStatus(state.win11_classic_menu_status);
     setConfig(normalizedConfig);
     setStatuses(state.cli_status);
-    setInstall(state.install_status);
+    setContextMenuStatus(contextMenuStatus);
+    setWin11ClassicMenuStatus(win11ClassicMenuStatus);
     return {
       ...state,
-      config: normalizedConfig
+      config: normalizedConfig,
+      context_menu_status: contextMenuStatus,
+      win11_classic_menu_status: win11ClassicMenuStatus
     };
   }, []);
 
@@ -1144,18 +1175,6 @@ export function HomePage() {
           setCliUserPathStatuses(EMPTY_CLI_USER_PATH_STATUS);
         }
 
-        if (!state.install_status.installed) {
-          const ensured = await ensureNilesoftInstalled();
-          setInstall(ensured);
-          if (ensured.needs_elevation) {
-            setLastResult({
-              ok: false,
-              code: "register_admin_required",
-              message: "Nilesoft 注册需要管理员权限",
-              detail: `${ensured.message}\n请在“安装/生效”页点击“提权重试注册”。`
-            });
-          }
-        }
       } catch (error) {
         const detail = String(error);
         const runtimeUnavailable = detail.includes("未检测到 Tauri 运行时");
@@ -1587,36 +1606,22 @@ export function HomePage() {
     []
   );
 
-  const applyMenuConfigWithFallback = useCallback(
+  const syncContextMenuConfig = useCallback(
     async (payload: AppConfig, reason: "install" | "uninstall" | "register"): Promise<ActionResult> => {
       const effectivePayload = normalizeLockedConfig(payload);
       const applyResult = await applyConfig(effectivePayload);
-      if (applyResult.ok) {
-        const activateResult = await activateNow();
-        if (activateResult.ok) {
-          return {
-            ok: true,
-            code: "menu_sync_applied",
-            message: reason === "uninstall" ? "已同步卸载后的右键菜单" : "已同步右键菜单",
-            detail: applyResult.detail ?? activateResult.detail ?? null
-          };
-        }
+      if (!applyResult.ok) {
+        return applyResult;
       }
-
-      const fallbackResult = await repairContextMenuHkcu(effectivePayload);
-      if (!fallbackResult.ok) {
-        return fallbackResult;
+      const notifyResult = await notifyShellChanged();
+      if (!notifyResult.ok) {
+        return notifyResult;
       }
-      const refreshResult = await refreshExplorer();
-      if (!refreshResult.ok) {
-        return refreshResult;
-      }
-
       return {
         ok: true,
-        code: "menu_sync_fallback_applied",
-        message: reason === "uninstall" ? "已通过 HKCU 兜底同步卸载后的右键菜单" : "已通过 HKCU 兜底同步右键菜单",
-        detail: fallbackResult.detail ?? refreshResult.detail ?? null
+        code: "menu_sync_applied",
+        message: reason === "uninstall" ? "已同步卸载后的右键菜单" : "已同步右键菜单",
+        detail: applyResult.detail ?? notifyResult.detail ?? null
       };
     },
     []
@@ -1630,7 +1635,7 @@ export function HomePage() {
       setStatuses(resolvedDetected);
       const filteredPayload = filterConfigTogglesByDetection(payload, resolvedDetected);
 
-      const syncResult = await applyMenuConfigWithFallback(
+      const syncResult = await syncContextMenuConfig(
         filteredPayload,
         detected ? "install" : "uninstall"
       );
@@ -1650,7 +1655,7 @@ export function HomePage() {
       });
       return true;
     },
-    [applyMenuConfigWithFallback, buildConfigWithCliDetected, refreshInitialState]
+    [buildConfigWithCliDetected, refreshInitialState, syncContextMenuConfig]
   );
 
   const requestMirrorFallbackRetry = useCallback(
@@ -1772,41 +1777,18 @@ export function HomePage() {
   const onEnsureInstall = useCallback(async () => {
     setWorking(true);
     try {
-      const result = await ensureNilesoftInstalled();
-      if (result.needs_elevation) {
-        setInstall((prev) => ({
-          ...prev,
-          ...result,
-          registered: false,
-          needs_elevation: true
-        }));
-        const lower = result.message.toLowerCase();
-        const adminMissing =
-          lower.includes("missing administrative privileges") ||
-          lower.includes("administrator") ||
-          result.message.includes("管理员");
-        setLastResult({
-          ok: false,
-          code: "register_admin_required",
-          message: adminMissing ? "缺少管理员权限，需提权注册" : "Nilesoft 尚未完成注册",
-          detail: `${result.message}\n请点击“提权重试注册”。`
-        });
-        return;
-      }
-
-      setInstall(result);
       await refreshInitialState();
       setLastResult({
         ok: true,
-        code: "ensure_install_ok",
-        message: "Nilesoft 安装/修复完成",
-        detail: result.message
+        code: "context_menu_state_refreshed",
+        message: "右键菜单状态已刷新",
+        detail: null
       });
     } catch (error) {
       setLastResult({
         ok: false,
-        code: "ensure_install_failed",
-        message: "安装失败",
+        code: "context_menu_state_refresh_failed",
+        message: "刷新右键菜单状态失败",
         detail: String(error)
       });
     } finally {
@@ -1817,78 +1799,22 @@ export function HomePage() {
   const onRetryElevation = useCallback(async () => {
     setWorking(true);
     try {
-      const elevated = await requestElevationAndRegister();
-      setLastResult(elevated);
-      if (!elevated.ok) {
-        const recheck = await ensureNilesoftInstalled();
-        setInstall((prev) => ({ ...prev, ...recheck }));
-        if (!recheck.registered || recheck.needs_elevation) {
-          return;
-        }
-        setLastResult({
-          ok: true,
-          code: "register_elevated_recheck_ok",
-          message: "提权命令返回异常，但复检确认注册成功",
-          detail: elevated.detail ?? recheck.message
-        });
+      const result = await notifyShellChanged();
+      setLastResult(result);
+      if (result.ok) {
+        await refreshInitialState();
       }
-
-      const state = await refreshInitialState();
-      if (!state.install_status.registered || state.install_status.needs_elevation) {
-        setInstall((prev) => ({
-          ...prev,
-          ...state.install_status,
-          registered: false,
-          needs_elevation: true
-        }));
-        setLastResult({
-          ok: false,
-          code: "register_state_inconsistent",
-          message: "提权后注册状态仍异常",
-          detail: `${state.install_status.message}\n请再次点击“提权重试注册”。`
-        });
-        return;
-      }
-
-      const payload = normalizeLockedConfig({
-        ...configRef.current,
-        cli_order: normalizeCliOrder(configRef.current.cli_order)
-      });
-      setConfig(payload);
-
-      const syncResult = await applyMenuConfigWithFallback(payload, "register");
-      if (!syncResult.ok) {
-        setLastResult(syncResult);
-        return;
-      }
-
-      await refreshInitialState();
-      setLastResult({
-        ok: true,
-        code: "register_menu_synced",
-        message: "提权注册成功，右键菜单已同步",
-        detail: syncResult.detail ?? null
-      });
     } catch (error) {
       setLastResult({
         ok: false,
-        code: "register_elevated_failed",
-        message: "提权注册失败",
+        code: "shell_refresh_failed",
+        message: "通知 Explorer 刷新失败",
         detail: String(error)
       });
     } finally {
       setWorking(false);
     }
-  }, [applyMenuConfigWithFallback, refreshInitialState]);
-
-  const onOneClickMaintenance = useCallback(async () => {
-    const payload = normalizeLockedConfig({
-      ...configRef.current,
-      cli_order: normalizeCliOrder(configRef.current.cli_order)
-    });
-    await runAction(() => oneClickInstallRepair(payload));
-    await refreshInitialState();
-  }, [refreshInitialState, runAction]);
+  }, [refreshInitialState]);
 
   const onDetect = useCallback(async () => {
     setWorking(true);
@@ -3140,7 +3066,7 @@ export function HomePage() {
           const payload = buildConfigWithCliDetected(configRef.current, key, true);
           setConfig(payload);
 
-          const syncResult = await applyMenuConfigWithFallback(payload, "install");
+          const syncResult = await syncContextMenuConfig(payload, "install");
           if (!syncResult.ok) {
             setQuickSetup({
               key,
@@ -3321,7 +3247,7 @@ export function HomePage() {
         const payload = buildConfigWithCliDetected(configRef.current, key, true);
         setConfig(payload);
 
-        const syncResult = await applyMenuConfigWithFallback(payload, "install");
+        const syncResult = await syncContextMenuConfig(payload, "install");
         if (!syncResult.ok) {
           setQuickSetup({
             key,
@@ -3345,7 +3271,7 @@ export function HomePage() {
           phase: "done",
           running: false,
           message: `${hint.display_name} 快速安装向导完成。`,
-          detail: "如在 Windows 11 现代菜单未显示，可先按 Shift+F10 查看经典菜单。"
+          detail: "Windows 11 顶层新菜单当前不支持；如未直接显示，请在“显示更多选项”或按 Shift+F10 查看经典菜单。"
         });
         setLastResult({
           ok: true,
@@ -3372,7 +3298,7 @@ export function HomePage() {
       }
     },
     [
-      applyMenuConfigWithFallback,
+      syncContextMenuConfig,
       buildConfigWithCliDetected,
       clearTerminalAutoCloseTimer,
       closeEmbeddedTerminalSilently,
@@ -3399,37 +3325,8 @@ export function HomePage() {
   );
 
   const ensureReady = useCallback(
-    (action: string) => {
-      if (!install.installed) {
-        setLastResult({
-          ok: false,
-          code: "install_required",
-          message: `${action}失败`,
-          detail: "未安装 Nilesoft，请先执行“安装/修复 Nilesoft”。"
-        });
-        return false;
-      }
-      if (!install.registered) {
-        setLastResult({
-          ok: false,
-          code: "register_required",
-          message: `${action}失败`,
-          detail: "Nilesoft 尚未完成注册，请先点击“提权重试注册”。"
-        });
-        return false;
-      }
-      if (install.needs_elevation) {
-        setLastResult({
-          ok: false,
-          code: "register_admin_required",
-          message: `${action}失败`,
-          detail: "当前注册状态需要管理员权限，请先点击“提权重试注册”。"
-        });
-        return false;
-      }
-      return true;
-    },
-    [install.installed, install.needs_elevation, install.registered]
+    (_action: string) => true,
+    []
   );
 
   const onApply = useCallback(async () => {
@@ -3446,18 +3343,13 @@ export function HomePage() {
       return;
     }
 
-    const activateResult = await runAction(activateNow);
+    const activateResult = await runAction(notifyShellChanged);
     if (!activateResult.ok) {
       return;
     }
 
     await refreshInitialState();
   }, [config, ensureReady, refreshInitialState, runAction]);
-
-  const onAttemptUnregister = useCallback(async () => {
-    await runAction(attemptUnregisterNilesoft);
-    await refreshInitialState();
-  }, [refreshInitialState, runAction]);
 
   const onCleanupData = useCallback(async () => {
     const first = await runAction(() => cleanupAppData());
@@ -3470,7 +3362,7 @@ export function HomePage() {
 
     const accepted = await requestConfirm({
       title: "确认清理应用数据",
-      message: "将清理 %LOCALAPPDATA%/execlink/ 下的配置、日志与 Nilesoft 目录。此操作不可撤销，是否继续？",
+      message: "将清理 %LOCALAPPDATA%/execlink/ 下的配置、日志与旧菜单运行时数据。此操作不可撤销，是否继续？",
       confirmText: "继续清理",
       cancelText: "取消",
       danger: true
@@ -3493,8 +3385,8 @@ export function HomePage() {
 
   const onOneClickUnregisterCleanup = useCallback(async () => {
     const accepted = await requestConfirm({
-      title: "确认一键反注册清理数据",
-      message: "将尝试反注册 Nilesoft，并清理 %LOCALAPPDATA%/execlink/ 下的数据。此操作不可撤销，是否继续？",
+      title: "确认清理旧残留",
+      message: "将清理旧 Nilesoft 目录与 ExecLink 旧菜单残留。此操作不可撤销，是否继续？",
       confirmText: "继续执行",
       cancelText: "取消",
       danger: true
@@ -3503,31 +3395,31 @@ export function HomePage() {
       setLastResult({
         ok: false,
         code: "unregister_cleanup_cancelled",
-        message: "已取消一键反注册清理",
+        message: "已取消清理旧残留",
         detail: null
       });
       return;
     }
-    await runAction(() => oneClickUnregisterCleanup(CLEANUP_CONFIRM_TOKEN));
+    await runAction(cleanupNilesoftArtifacts);
     await refreshInitialState();
   }, [refreshInitialState, requestConfirm, runAction]);
 
-  const onRepairMenuFallback = useCallback(async () => {
-    const payload = normalizeLockedConfig({
-      ...config,
-      cli_order: normalizeCliOrder(config.cli_order)
-    });
-    const result = await runAction(() => repairContextMenuHkcu(payload));
+  const onMigrateLegacyMenus = useCallback(async () => {
+    const result = await runAction(migrateLegacyHkcuMenuToV2);
     if (!result.ok) {
       return;
     }
-    await runAction(refreshExplorer);
-  }, [config, runAction]);
+    const [groups, legacy] = await Promise.all([listExeclinkContextMenus(), detectLegacyMenuArtifacts()]);
+    setInstalledMenuGroups(groups);
+    setLegacyArtifacts(legacy);
+    setSelectedMenuGroupKeys([]);
+    await refreshInitialState();
+  }, [refreshInitialState, runAction]);
 
   const onRemoveMenuFallback = useCallback(async () => {
     const accepted = await requestConfirm({
-      title: "确认删除 HKCU 兜底菜单",
-      message: `将删除 HKCU 下“${config.menu_title}”兜底菜单，是否继续？`,
+      title: "确认删除 ExecLink 菜单",
+      message: `将删除当前用户下“${config.menu_title}”相关的 ExecLink 右键菜单，是否继续？`,
       confirmText: "继续删除",
       cancelText: "取消",
       danger: true
@@ -3535,28 +3427,82 @@ export function HomePage() {
     if (!accepted) {
       return;
     }
-    const result = await runAction(() => removeContextMenuHkcu(config.menu_title));
+    const result = await runAction(removeAllExeclinkContextMenus);
     if (!result.ok) {
       return;
     }
-    await runAction(refreshExplorer);
-  }, [config.menu_title, requestConfirm, runAction]);
+    await refreshInitialState();
+  }, [config.menu_title, refreshInitialState, requestConfirm, runAction]);
+
+  const onEnableWin11ClassicMenu = useCallback(async () => {
+    const accepted = await requestConfirm({
+      title: "启用 Win11 经典右键菜单",
+      message: [
+        "将为当前用户开启系统级 Win11 经典右键菜单覆盖。",
+        "这会影响整个资源管理器右键菜单，而不只是 ExecLink。",
+        "",
+        "如未立即生效，通常仍需点击“Explorer 兜底刷新”或重新登录。",
+        "是否继续？"
+      ].join("\n"),
+      confirmText: "继续启用",
+      cancelText: "取消",
+      danger: true
+    });
+    if (!accepted) {
+      return;
+    }
+    const result = await runAction(enableWin11ClassicContextMenu);
+    if (!result.ok) {
+      return;
+    }
+    await refreshInitialState();
+  }, [refreshInitialState, requestConfirm, runAction]);
+
+  const onDisableWin11ClassicMenu = useCallback(async () => {
+    const accepted = await requestConfirm({
+      title: "恢复 Win11 原生顶层菜单",
+      message: [
+        "将移除当前用户的经典右键菜单覆盖，恢复 Win11 原生顶层右键菜单。",
+        "这同样会影响整个资源管理器右键菜单。",
+        "",
+        "如未立即生效，通常仍需点击“Explorer 兜底刷新”或重新登录。",
+        "是否继续？"
+      ].join("\n"),
+      confirmText: "恢复原生菜单",
+      cancelText: "取消",
+      danger: true
+    });
+    if (!accepted) {
+      return;
+    }
+    const result = await runAction(disableWin11ClassicContextMenu);
+    if (!result.ok) {
+      return;
+    }
+    await refreshInitialState();
+  }, [refreshInitialState, requestConfirm, runAction]);
 
   const refreshHkcuGroups = useCallback(async (silent = false) => {
     if (!silent) {
-      setLoadingHkcuGroups(true);
+      setLoadingMenuGroups(true);
     }
     try {
-      const groups = await listContextMenuGroupsHkcu();
-      setHkcuGroups(groups);
-      setSelectedHkcuGroupKeys((prev) => prev.filter((key) => groups.some((group) => group.key === key)));
+      const [groups, legacy] = await Promise.all([listExeclinkContextMenus(), detectLegacyMenuArtifacts()]);
+      setInstalledMenuGroups(groups);
+      setLegacyArtifacts(legacy);
+      setSelectedMenuGroupKeys((prev) =>
+        prev.filter((key) => groups.some((group) => group.group_id === key))
+      );
       if (!silent) {
         setLastResult({
           ok: true,
           code: "menu_groups_scanned",
-          message: groups.length ? `检测到 ${groups.length} 个历史分组` : "未检测到可清理的历史分组",
+          message:
+            groups.length || legacy.length
+              ? `检测到 ${groups.length} 个 v2 分组，${legacy.length} 个 legacy 残留`
+              : "未检测到需要处理的菜单项",
           detail: groups.length
-            ? groups.map((group) => `${group.title} [${group.key}]`).join("；")
+            ? groups.map((group) => `${group.title} [${group.group_id}]`).join("；")
             : null
         });
       }
@@ -3565,19 +3511,19 @@ export function HomePage() {
         setLastResult({
           ok: false,
           code: "menu_groups_scan_failed",
-          message: "检测历史分组失败",
+          message: "检测右键菜单失败",
           detail: String(error)
         });
       }
     } finally {
       if (!silent) {
-        setLoadingHkcuGroups(false);
+        setLoadingMenuGroups(false);
       }
     }
   }, []);
 
   const onToggleHkcuGroupSelection = useCallback((key: string, checked: boolean) => {
-    setSelectedHkcuGroupKeys((prev) => {
+    setSelectedMenuGroupKeys((prev) => {
       if (checked) {
         if (prev.includes(key)) {
           return prev;
@@ -3589,7 +3535,7 @@ export function HomePage() {
   }, []);
 
   const onDeleteSelectedHkcuGroups = useCallback(async () => {
-    if (selectedHkcuGroupKeys.length === 0) {
+    if (selectedMenuGroupKeys.length === 0) {
       setLastResult({
         ok: false,
         code: "menu_groups_empty_selection",
@@ -3599,10 +3545,12 @@ export function HomePage() {
       return;
     }
 
-    const selectedGroups = hkcuGroups.filter((group) => selectedHkcuGroupKeys.includes(group.key));
+    const selectedGroups = installedMenuGroups.filter((group) => selectedMenuGroupKeys.includes(group.group_id));
     const accepted = await requestConfirm({
-      title: "确认删除历史分组",
-      message: `将删除以下 HKCU 历史分组：\n${selectedGroups.map((group) => `- ${group.title} [${group.key}]`).join("\n")}\n\n是否继续？`,
+      title: "确认删除已安装菜单",
+      message: `将删除当前检测到的 ExecLink 菜单分组：\n${selectedGroups
+        .map((group) => `- ${group.title} [${group.group_id}]`)
+        .join("\n")}\n\n是否继续？`,
       confirmText: "继续删除",
       cancelText: "取消",
       danger: true
@@ -3613,42 +3561,31 @@ export function HomePage() {
 
     setWorking(true);
     try {
-      for (const key of selectedHkcuGroupKeys) {
-        const result = await removeContextMenuHkcu(key);
-        if (!result.ok) {
-          setLastResult({
-            ...result,
-            message: `删除分组失败：${key}`
-          });
-          return;
-        }
-      }
-
-      const refreshResult = await refreshExplorer();
-      if (!refreshResult.ok) {
-        setLastResult(refreshResult);
+      const result = await removeAllExeclinkContextMenus();
+      if (!result.ok) {
+        setLastResult(result);
         return;
       }
 
       await refreshHkcuGroups(true);
-      setSelectedHkcuGroupKeys([]);
+      setSelectedMenuGroupKeys([]);
       setLastResult({
         ok: true,
-        code: "menu_groups_removed",
-        message: `已删除 ${selectedHkcuGroupKeys.length} 个历史分组`,
-        detail: selectedGroups.map((group) => `${group.title} [${group.key}]`).join("；")
+        code: "installed_menu_groups_removed",
+        message: `已删除 ${selectedGroups.length} 个菜单分组`,
+        detail: selectedGroups.map((group) => `${group.title} [${group.group_id}]`).join("；")
       });
     } catch (error) {
       setLastResult({
         ok: false,
         code: "menu_groups_remove_failed",
-        message: "删除历史分组失败",
+        message: "删除已安装菜单失败",
         detail: String(error)
       });
     } finally {
       setWorking(false);
     }
-  }, [hkcuGroups, refreshHkcuGroups, requestConfirm, selectedHkcuGroupKeys]);
+  }, [installedMenuGroups, refreshHkcuGroups, requestConfirm, selectedMenuGroupKeys]);
 
   const onCloseQuickSetup = useCallback(() => {
     setQuickSetup(EMPTY_QUICK_SETUP);
@@ -3696,7 +3633,7 @@ export function HomePage() {
     () => normalizeInstallTimeouts(config.install_timeouts),
     [config.install_timeouts]
   );
-  const canOperate = install.installed && install.registered && !install.needs_elevation;
+  const canOperate = true;
   const showPrereqInstallButton = !installPrereq.git || !installPrereq.node;
   const prereqInstallButtonLabel = useMemo(() => {
     if (!installPrereq.git && !installPrereq.node) {
@@ -3786,7 +3723,7 @@ export function HomePage() {
               <span className="text-[#4b443e]">Exec</span>
               <span className="text-green-600">Link</span>
               <span className={`pointer-events-none absolute top-[calc(100%+8px)] left-0 z-10 translate-y-0.5 whitespace-nowrap rounded-[var(--radius-pill)] bg-[var(--ui-base)] px-2.5 py-[5px] text-[11px] text-[var(--ui-muted)] opacity-0 transition-[opacity,transform] duration-150 ${OUTSET_SMALL} group-hover:translate-y-0 group-hover:opacity-100 group-focus-visible:translate-y-0 group-focus-visible:opacity-100`}>
-                Windows 11 右键菜单 AI CLI 快捷入口
+                Windows 右键菜单 AI CLI 快捷入口，Win11 请在“显示更多选项”中查看
               </span>
             </h1>
           </div>
@@ -3834,15 +3771,9 @@ export function HomePage() {
                 {prereqInstallButtonLabel}
               </button>
             ) : null}
-            {canOperate ? (
-              <button className={HEADER_ACTION_BUTTON_CLASS} onClick={onApply} disabled={working || loading}>
-                应用配置
-              </button>
-            ) : (
-              <button className={HEADER_ACTION_BUTTON_CLASS} onClick={onOneClickMaintenance} disabled={working || loading}>
-                一键安装修复
-              </button>
-            )}
+            <button className={HEADER_ACTION_BUTTON_CLASS} onClick={onApply} disabled={working || loading}>
+              应用配置
+            </button>
           </div>
         </div>
       </header>
@@ -3941,87 +3872,9 @@ export function HomePage() {
                   onChange={(checked) => setConfig((prev) => ({ ...prev, enable_context_menu: checked }))}
                   description="关闭后仅保留配置文件，不显示 AI 菜单项"
                 />
-                <label className={FIELD_CLASS}>
-                  <span className={FIELD_LABEL_CLASS}>终端运行器</span>
-                  <span className="relative block">
-                    <select
-                      className={SELECT_CLASS}
-                      value={config.terminal_mode}
-                      onChange={(event) =>
-                        setConfig((prev) => ({
-                          ...prev,
-                          terminal_mode: event.target.value as AppConfig["terminal_mode"]
-                        }))
-                      }
-                    >
-                      {TERMINAL_MODE_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                    <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-[var(--ui-light)]">
-                      v
-                    </span>
-                  </span>
-                </label>
-                <section className={`grid gap-3 rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${INSET_SMALL}`}>
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="grid gap-0.5">
-                      <span className="text-sm font-semibold text-[var(--ui-text)]">uv 安装源策略</span>
-                      <span className="text-xs text-[var(--ui-muted)]">
-                        当前：{uvInstallSourceModeLabel(config.uv_install_source_mode)}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      className={RUNTIME_SECONDARY_BUTTON_CLASS}
-                      disabled={working || loading}
-                      onClick={() => setUvSourceDialog({ open: true })}
-                    >
-                      选择策略
-                    </button>
-                  </div>
-                  <p className="text-xs text-[var(--ui-muted)]">
-                    自动策略会按 <code>winget -&gt; 官方脚本 -&gt; 清华镜像 -&gt; 阿里镜像</code> 依次回退。
-                  </p>
-                </section>
-                <section className={`grid gap-3 rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${INSET_SMALL}`}>
-                  <h3 className="text-sm font-semibold text-[var(--ui-text)]">安装超时（秒）</h3>
-                  <p className="text-xs text-[var(--ui-muted)]">
-                    所有安装流程都会显示倒计时，超时后会自动返回失败详情。范围超出会自动纠正到安全区间。
-                  </p>
-                  <div className="grid gap-2">
-                    {INSTALL_TIMEOUT_FIELDS.map((field) => {
-                      const bounds = INSTALL_TIMEOUT_BOUNDS[field.key];
-                      const valueSeconds = Math.round(effectiveInstallTimeouts[field.key] / 1000);
-                      return (
-                        <label key={field.key} className={FIELD_CLASS}>
-                          <span className="text-xs font-semibold text-[var(--ui-text)]">{field.title}</span>
-                          <span className="text-[11px] text-[var(--ui-muted)]">{field.description}</span>
-                          <input
-                            type="number"
-                            min={Math.round(bounds.min / 1000)}
-                            max={Math.round(bounds.max / 1000)}
-                            step={1}
-                            className={INPUT_CLASS}
-                            value={valueSeconds}
-                            onChange={(event) => {
-                              const next = Number.parseInt(event.target.value, 10);
-                              if (!Number.isFinite(next)) {
-                                return;
-                              }
-                              setInstallTimeoutValueMs(field.key, next * 1000);
-                            }}
-                          />
-                          <span className="text-[11px] text-[var(--ui-muted)]">
-                            范围：{Math.round(bounds.min / 1000)} ~ {Math.round(bounds.max / 1000)} 秒
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </section>
+                <p className="text-xs text-[var(--ui-muted)]">
+                  终端运行器、uv 安装策略和安装超时已收拢到下方“高级维护”，主区只保留最常用的菜单开关。
+                </p>
               </section>
               <details className={`rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${OUTSET_SMALL}`}>
                 <summary className="cursor-pointer select-none text-sm font-semibold text-[var(--ui-text)]">
@@ -4029,115 +3882,265 @@ export function HomePage() {
                 </summary>
                 <div className="mt-3 grid gap-4">
                   <section className={PANEL_BLOCK_CLASS}>
-                    <h2 className={PANEL_TITLE_CLASS}>Nilesoft 安装状态</h2>
-                    <p className="text-sm text-[var(--ui-muted)]">{install.message}</p>
+                    <h2 className={PANEL_TITLE_CLASS}>运行与安装策略</h2>
+                    <p className="text-sm text-[var(--ui-muted)]">
+                      调整菜单命令的终端运行方式、uv 安装回退策略，以及安装流程的超时窗口。
+                    </p>
+                    <label className={FIELD_CLASS}>
+                      <span className={FIELD_LABEL_CLASS}>终端运行器</span>
+                      <span className="relative block">
+                        <select
+                          className={SELECT_CLASS}
+                          value={config.terminal_mode}
+                          onChange={(event) =>
+                            setConfig((prev) => ({
+                              ...prev,
+                              terminal_mode: event.target.value as AppConfig["terminal_mode"]
+                            }))
+                          }
+                        >
+                          {TERMINAL_MODE_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                        <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-[var(--ui-light)]">
+                          v
+                        </span>
+                      </span>
+                    </label>
+                    <section className={`grid gap-3 rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${INSET_SMALL}`}>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="grid gap-0.5">
+                          <span className="text-sm font-semibold text-[var(--ui-text)]">uv 安装源策略</span>
+                          <span className="text-xs text-[var(--ui-muted)]">
+                            当前：{uvInstallSourceModeLabel(config.uv_install_source_mode)}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          className={RUNTIME_SECONDARY_BUTTON_CLASS}
+                          disabled={working || loading}
+                          onClick={() => setUvSourceDialog({ open: true })}
+                        >
+                          选择策略
+                        </button>
+                      </div>
+                      <p className="text-xs text-[var(--ui-muted)]">
+                        自动策略会按 <code>winget -&gt; 官方脚本 -&gt; 清华镜像 -&gt; 阿里镜像</code> 依次回退。
+                      </p>
+                    </section>
+                    <section className={`grid gap-3 rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${INSET_SMALL}`}>
+                      <h3 className="text-sm font-semibold text-[var(--ui-text)]">安装超时（秒）</h3>
+                      <p className="text-xs text-[var(--ui-muted)]">
+                        所有安装流程都会显示倒计时，超时后会自动返回失败详情。范围超出会自动纠正到安全区间。
+                      </p>
+                      <div className="grid gap-2">
+                        {INSTALL_TIMEOUT_FIELDS.map((field) => {
+                          const bounds = INSTALL_TIMEOUT_BOUNDS[field.key];
+                          const valueSeconds = Math.round(effectiveInstallTimeouts[field.key] / 1000);
+                          return (
+                            <label key={field.key} className={FIELD_CLASS}>
+                              <span className="text-xs font-semibold text-[var(--ui-text)]">{field.title}</span>
+                              <span className="text-[11px] text-[var(--ui-muted)]">{field.description}</span>
+                              <input
+                                type="number"
+                                min={Math.round(bounds.min / 1000)}
+                                max={Math.round(bounds.max / 1000)}
+                                step={1}
+                                className={INPUT_CLASS}
+                                value={valueSeconds}
+                                onChange={(event) => {
+                                  const next = Number.parseInt(event.target.value, 10);
+                                  if (!Number.isFinite(next)) {
+                                    return;
+                                  }
+                                  setInstallTimeoutValueMs(field.key, next * 1000);
+                                }}
+                              />
+                              <span className="text-[11px] text-[var(--ui-muted)]">
+                                范围：{Math.round(bounds.min / 1000)} ~ {Math.round(bounds.max / 1000)} 秒
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  </section>
+
+                  <section className={PANEL_BLOCK_CLASS}>
+                    <h2 className={PANEL_TITLE_CLASS}>右键菜单状态</h2>
+                    <p className="text-sm text-[var(--ui-muted)]">{contextMenuStatus.message}</p>
                     <p>
-                      已安装: <strong>{install.installed ? "是" : "否"}</strong>
+                      已应用 v2 菜单: <strong>{contextMenuStatus.applied ? "是" : "否"}</strong>
                     </p>
                     <p>
-                      已注册: <strong>{install.registered && !install.needs_elevation ? "是" : "否"}</strong>
+                      当前分组: <strong>{contextMenuStatus.current_group_title ?? contextMenuStatus.current_group_id ?? "未检测到"}</strong>
                     </p>
                     <p>
-                      Shell 路径: <code>{install.shell_exe ?? "未检测到"}</code>
+                      生效作用域: <code>{contextMenuStatus.enabled_roots.length ? contextMenuStatus.enabled_roots.join(" | ") : "未检测到"}</code>
                     </p>
                     <p>
-                      配置根: <code>{install.config_root ?? "未解析"}</code>
+                      Legacy 残留: <strong>{legacyArtifacts.length}</strong>
                     </p>
                     <div className="flex flex-wrap gap-2.5">
                       <button className={RUNTIME_PRIMARY_BUTTON_CLASS} onClick={onEnsureInstall} disabled={working || loading}>
-                        安装/修复 Nilesoft
+                        刷新状态
                       </button>
-                      {install.installed && (!install.registered || install.needs_elevation) ? (
-                        <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={onRetryElevation} disabled={working || loading}>
-                          提权重试注册
-                        </button>
-                      ) : null}
+                      <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={onRetryElevation} disabled={working || loading}>
+                        通知 Explorer 刷新
+                      </button>
+                      <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={() => void runAction(restartExplorerFallback)} disabled={working || loading}>
+                        Explorer 兜底刷新
+                      </button>
                     </div>
                   </section>
 
                   <section className={PANEL_BLOCK_CLASS}>
-                    <h2 className={PANEL_TITLE_CLASS}>恢复与清理</h2>
+                    <h2 className={PANEL_TITLE_CLASS}>迁移与清理</h2>
                     <p className="text-sm text-[var(--ui-muted)]">
-                      用于卸载或异常恢复。点击“一键反注册清理数据”会先尝试反注册，再清理
-                      <code>%LOCALAPPDATA%/execlink/</code> 数据目录。
+                      用于迁移旧版 PowerShell HKCU 菜单、清理旧 Nilesoft 残留，以及移除当前用户下的 ExecLink 菜单。
                     </p>
                     <div className="flex flex-wrap gap-2.5">
+                      <button
+                        className={RUNTIME_PRIMARY_BUTTON_CLASS}
+                        onClick={onMigrateLegacyMenus}
+                        disabled={working || loading || legacyArtifacts.length === 0}
+                      >
+                        迁移 Legacy 菜单
+                      </button>
+                      <button
+                        className={RUNTIME_SECONDARY_BUTTON_CLASS}
+                        onClick={onRemoveMenuFallback}
+                        disabled={working || loading}
+                      >
+                        删除当前菜单
+                      </button>
                       <button
                         className={RUNTIME_DANGER_BUTTON_CLASS}
                         onClick={onOneClickUnregisterCleanup}
                         disabled={working || loading}
                       >
-                        一键反注册清理数据
+                        清理旧残留
                       </button>
                     </div>
                     <details className={`rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${OUTSET_SMALL}`}>
                       <summary className="cursor-pointer select-none text-sm font-semibold text-[var(--ui-text)]">
-                        历史 HKCU 分组清理
+                        菜单扫描结果
                       </summary>
                       <div className="mt-2 grid gap-2">
                         <div className="flex flex-wrap items-center gap-2">
                           <button
                             className={RUNTIME_SECONDARY_BUTTON_CLASS}
                             onClick={() => void refreshHkcuGroups(false)}
-                            disabled={working || loading || loadingHkcuGroups}
+                            disabled={working || loading || loadingMenuGroups}
                           >
-                            {loadingHkcuGroups ? "检测中..." : "检测历史分组"}
+                            {loadingMenuGroups ? "检测中..." : "扫描菜单状态"}
                           </button>
                           <button
                             className={RUNTIME_DANGER_BUTTON_CLASS}
                             onClick={onDeleteSelectedHkcuGroups}
-                            disabled={working || loading || selectedHkcuGroupKeys.length === 0}
+                            disabled={working || loading || selectedMenuGroupKeys.length === 0}
                           >
-                            删除选中分组
+                            删除已选分组
                           </button>
                         </div>
-                        {hkcuGroups.length === 0 ? (
-                          <p className="text-xs text-[var(--ui-muted)]">未检测到可清理的历史分组。</p>
+                        {installedMenuGroups.length === 0 && legacyArtifacts.length === 0 ? (
+                          <p className="text-xs text-[var(--ui-muted)]">未检测到已安装分组或 legacy 残留。</p>
                         ) : (
                           <div className="grid gap-1.5">
-                            {hkcuGroups.map((group) => {
-                              const checked = selectedHkcuGroupKeys.includes(group.key);
+                            {installedMenuGroups.map((group) => {
+                              const checked = selectedMenuGroupKeys.includes(group.group_id);
                               return (
                                 <label
-                                  key={group.key}
+                                  key={group.group_id}
                                   className={`flex items-start gap-2 rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[var(--ui-base)] px-2.5 py-2 text-xs ${OUTSET_SMALL}`}
                                 >
                                   <input
                                     type="checkbox"
                                     checked={checked}
-                                    onChange={(event) => onToggleHkcuGroupSelection(group.key, event.target.checked)}
+                                    onChange={(event) => onToggleHkcuGroupSelection(group.group_id, event.target.checked)}
                                     disabled={working || loading}
                                     className="mt-0.5"
                                   />
                                   <span className="grid gap-0.5">
                                     <span className="font-semibold text-[var(--ui-text)]">
                                       {group.title}{" "}
-                                      <span className="font-mono text-[11px] text-[var(--ui-muted)]">[{group.key}]</span>
+                                      <span className="font-mono text-[11px] text-[var(--ui-muted)]">[{group.group_id}]</span>
                                     </span>
                                     <span className="text-[11px] text-[var(--ui-muted)]">
                                       出现位置：{group.roots.join(" | ")}
+                                    </span>
+                                    <span className="text-[11px] text-[var(--ui-muted)]">
+                                      项目：{group.item_ids.join(" | ")}
                                     </span>
                                   </span>
                                 </label>
                               );
                             })}
+                            {legacyArtifacts.map((artifact) => (
+                              <div
+                                key={artifact.path}
+                                className={`rounded-[var(--radius-md)] border border-[#ddcfc2] bg-[#ecddd8] px-2.5 py-2 text-xs ${OUTSET_SMALL}`}
+                              >
+                                <div className="font-semibold text-[#7d473e]">
+                                  Legacy: {artifact.title} <span className="font-mono text-[11px]">[{artifact.root}]</span>
+                                </div>
+                                <div className="mt-0.5 text-[11px] text-[#8a4f45]">{artifact.path}</div>
+                              </div>
+                            ))}
                           </div>
                         )}
                       </div>
                     </details>
                   </section>
 
-                  {!canOperate ? (
-                    <section className={`grid gap-2 rounded-[var(--radius-lg)] border border-[#ddcfc2] bg-[#ecddd8] p-3 ${INSET_SMALL}`}>
-                      <h2 className={PANEL_TITLE_CLASS}>操作前置条件</h2>
-                      <p className="text-sm text-[#7d473e]">
-                        当前状态未满足“已安装 + 已注册”，已阻止“应用配置（自动生效）”。
+                  <section className={`grid gap-2 rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${INSET_SMALL}`}>
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="grid gap-1">
+                        <h2 className={PANEL_TITLE_CLASS}>Windows 11 经典菜单开关</h2>
+                        <p className="text-sm text-[var(--ui-muted)]">
+                          这是当前用户级系统开关，会影响整个资源管理器右键菜单，而不只是 ExecLink。
+                        </p>
+                      </div>
+                      <span
+                        className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${
+                          win11ClassicMenuStatus.enabled
+                            ? "border-[#b9caaa] bg-[#e5eddc] text-[#4f6b35]"
+                            : "border-[#d8cfbf] bg-[#efe7db] text-[#7b6850]"
+                        }`}
+                      >
+                        {win11ClassicMenuStatus.enabled ? "已启用经典菜单" : "原生顶层菜单"}
+                      </span>
+                    </div>
+                    <p className="text-sm text-[var(--ui-muted)]">{win11ClassicMenuStatus.message}</p>
+                    <div className="flex flex-wrap gap-2.5">
+                      <button
+                        className={RUNTIME_PRIMARY_BUTTON_CLASS}
+                        onClick={onEnableWin11ClassicMenu}
+                        disabled={working || loading || win11ClassicMenuStatus.enabled}
+                      >
+                        启用经典右键菜单
+                      </button>
+                      <button
+                        className={RUNTIME_SECONDARY_BUTTON_CLASS}
+                        onClick={onDisableWin11ClassicMenu}
+                        disabled={working || loading || !win11ClassicMenuStatus.enabled}
+                      >
+                        恢复 Win11 原生菜单
+                      </button>
+                    </div>
+                    <div
+                      className={`grid gap-1 rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[#efe7db] px-3 py-2 text-xs text-[#6e6255] ${OUTSET_SMALL}`}
+                    >
+                      <p>若切换后未立即生效，请先点击上方“Explorer 兜底刷新”；仍未变化时请重新登录。</p>
+                      <p>注册表路径：<code>{win11ClassicMenuStatus.registry_path}</code></p>
+                      <p>
+                        当前版本的 ExecLink 仍是经典菜单方案；若不启用该系统开关，在 Windows 11 上仍需通过“显示更多选项”进入。
                       </p>
-                      <p className="text-sm text-[#7d473e]">
-                        请先点击“安装/修复 Nilesoft”，如提示失败再点击“提权重试注册”。
-                      </p>
-                    </section>
-                  ) : null}
+                    </div>
+                  </section>
                 </div>
               </details>
             </div>

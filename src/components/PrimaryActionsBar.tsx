@@ -33,7 +33,7 @@ export function PrimaryActionsBar({
         <div className="grid gap-2">
           <h1 className="m-0 text-xl font-bold text-[var(--ui-text)]">ExecLink Workspace</h1>
           <p className="m-0 text-sm text-[var(--ui-muted)]">
-            Windows 11 右键菜单 AI CLI 快捷入口，点击应用配置后自动执行生效。
+            Windows 右键菜单 AI CLI 快捷入口；Win11 请在“显示更多选项”中查看，点击应用配置后自动执行生效。
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <span className={chipClass}>
@@ -42,7 +42,7 @@ export function PrimaryActionsBar({
             <span className={chipClass}>
               已启用菜单项: {enabledCliCount}/{totalCliCount}
             </span>
-            <span className={chipClass}>Nilesoft: {canOperate ? "就绪" : "未就绪"}</span>
+            <span className={chipClass}>右键菜单: {canOperate ? "可应用" : "检查中"}</span>
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2.5">

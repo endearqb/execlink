@@ -7,11 +7,11 @@ interface UsageGuideDialogProps {
 }
 
 const GUIDE_STEPS = [
-  "首次使用先点击“一键安装修复”，完成 Nilesoft 的安装与注册。",
+  "首次使用先点击“刷新 CLI 检测”，确认本机已安装 CLI 的检测状态。",
   "点击“刷新 CLI 检测”，确认已安装 CLI 的检测状态。",
   "未检测到的 CLI 先完成安装；若需要授权，点击对应 CLI 的登录按钮。",
   "按需设置 CLI 显示开关、顺序、分组名称和自定义名称。",
-  "点击“应用配置”，然后在资源管理器空白处右键确认菜单生效。"
+  "点击“应用配置”，然后在资源管理器空白处右键确认菜单生效；Windows 11 请在“显示更多选项”中查看。"
 ];
 
 export function UsageGuideDialog({ open, onClose }: UsageGuideDialogProps) {
@@ -67,7 +67,7 @@ export function UsageGuideDialog({ open, onClose }: UsageGuideDialogProps) {
           ))}
         </ol>
         <p className="mt-2 text-[11px] text-[var(--ui-muted)]">
-          如遇注册或生效异常，请优先在“安装/生效”页使用“一键安装修复”和“提权重试注册”。
+          如遇菜单未立即刷新，可在“高级维护”里先通知 Explorer，再使用 Explorer 兜底刷新。Windows 11 顶层新菜单当前不支持，请以经典菜单层为准。
         </p>
         <div className="mt-3 flex items-center justify-end">
           <button
@@ -83,4 +83,3 @@ export function UsageGuideDialog({ open, onClose }: UsageGuideDialogProps) {
     document.body
   );
 }
-

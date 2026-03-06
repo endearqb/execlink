@@ -39,9 +39,6 @@
         "template": "wix/main.wxs",
         "language": "zh-CN"
       }
-    },
-    "resources": [
-      "resources/nilesoft.zip"
-    ]
+    }
   }
 }

@@ -24,3 +24,9 @@
 - 当需求是“保留 Windows 原生任务栏右键”时，taskbar fallback 必须加 `vis=key.shift()`（或等价条件）避免默认接管；将自定义菜单降级为按键触发能力。
 - 当目标是“普通任务栏右键保持原生”时，`menu(mode="multiple")` 这类通用组必须显式加 `where=!window.is_taskbar`，否则即使 taskbar import 设了 `vis=key.shift()` 仍可能在任务栏被 Shell 接管。
 - `taskbar` 菜单仅加 `vis=key.shift()` 不能保证普通任务栏右键回到原生；还必须在 `settings.exclude.where` 加 `window.is_taskbar && !key.shift()` 级别的排除规则，避免被 Shell 空拦截。
+- Windows 经典级联菜单父键不能只写 `MUIVerb` 和 `shell` 子树；对 `ExecLink.main` 这类父键必须显式写 `SubCommands=""`，否则 Explorer 可能只显示分组名而不展开子项。
+- 当用户反馈“图标看起来都一样”或“Win11 入口不直观”时，不能只从代码逻辑看是否已生效；要同时检查菜单品牌识别是否清晰，以及主页/帮助/README 是否把“仅支持经典菜单层、需点显示更多选项”的平台边界讲明白。
+- 下载 favicon 或站点图标资源时，不能只相信文件扩展名；入库前必须校验文件头是否为真正的 ICO 容器（`00 00 01 00`），否则很容易把 `jpg/png` 伪装成 `.ico` 带进安装包，最终只在 Explorer 中表现为“部分图标不显示”。
+- 对会影响整个 Windows Shell 行为的能力（如 Win11 经典右键菜单覆盖），不要偷偷并入“应用配置”；应做成独立显式开关、单独确认弹窗，并在 UI 上明确写清“影响整个资源管理器、可能仍需 Explorer 刷新或重新登录”。
+- 对资源管理器传入的路径占位符（如 `%V`），不要在 PowerShell 命令里手工拼成 `''%V''` 之类的字符串字面量；应把路径作为 `-Command` 的独立参数传入，再在脚本中用 `$args[0]` 读取，避免真实路径替换后被解析成空字符串。
+- CLI 菜单可见性要区分“用户配置意图”和“当前系统真实可用性”：配置文件里保留用户的 CLI 开关与自定义名称，但实际写入右键菜单时必须再与 `detect_all_clis()` 结果取交集，避免把未安装 CLI 暴露给最终用户。

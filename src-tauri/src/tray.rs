@@ -6,7 +6,7 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .text("open_main", "打开主窗口")
         .text("toggle_context_menu", "开关右键菜单")
         .text("apply_config", "应用配置")
-        .text("activate_now", "立即生效")
+        .text("refresh_shell", "刷新资源管理器菜单")
         .separator()
         .text("quit", "退出")
         .build()?;
@@ -43,7 +43,7 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, event_id: &str) {
             if result.ok {
                 let activated = commands::activate_now_from_tray();
                 logging::log_line(&format!(
-                    "[tray] toggle context menu applied. activate ok={} code={} msg={}",
+                    "[tray] toggle context menu applied. refresh ok={} code={} msg={}",
                     activated.ok, activated.code, activated.message
                 ));
             } else {
@@ -62,10 +62,10 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, event_id: &str) {
                 result.ok, result.code, result.message
             ));
         }
-        "activate_now" => {
+        "refresh_shell" => {
             let result = commands::activate_now_from_tray();
             logging::log_line(&format!(
-                "[tray] activate now ok={} code={} msg={}",
+                "[tray] refresh shell ok={} code={} msg={}",
                 result.ok, result.code, result.message
             ));
         }

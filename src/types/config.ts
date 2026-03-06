@@ -110,15 +110,12 @@ export interface AppConfig {
   menu_title: string;
   cli_order: CliKey[];
   display_names: CliDisplayNames;
-  show_nilesoft_default_menus: boolean;
   terminal_mode: TerminalMode;
   terminal_theme_id: string;
   terminal_theme_mode: TerminalThemeMode;
   ps_prompt_style: PsPromptStyle;
   uv_install_source_mode: UvInstallSourceMode;
   install_timeouts: InstallTimeoutConfig;
-  advanced_menu_mode: boolean;
-  menu_theme_enabled: boolean;
   // backward-compatible field, currently not exposed in UI
   use_windows_terminal: boolean;
   no_exit: boolean;
@@ -137,19 +134,36 @@ export interface CliStatusMap {
   pwsh: boolean;
 }
 
-export interface InstallStatus {
-  installed: boolean;
-  registered: boolean;
-  needs_elevation: boolean;
+export interface ContextMenuStatus {
+  applied: boolean;
+  enabled_roots: string[];
+  has_legacy_artifacts: boolean;
+  requires_manual_refresh: boolean;
+  current_group_id?: string | null;
+  current_group_title?: string | null;
   message: string;
-  shell_exe?: string | null;
-  config_root?: string | null;
 }
 
-export interface HkcuMenuGroup {
-  key: string;
+export interface Win11ClassicMenuStatus {
+  enabled: boolean;
+  registry_path: string;
+  restart_recommended: boolean;
+  message: string;
+}
+
+export interface InstalledMenuGroup {
+  group_id: string;
   title: string;
   roots: string[];
+  item_ids: string[];
+  schema_version: number;
+}
+
+export interface LegacyArtifact {
+  path: string;
+  title: string;
+  root: string;
+  reason: string;
 }
 
 export interface ActionResult {
@@ -263,7 +277,8 @@ export interface TerminalStateEvent {
 export interface InitialState {
   config: AppConfig;
   cli_status: CliStatusMap;
-  install_status: InstallStatus;
+  context_menu_status: ContextMenuStatus;
+  win11_classic_menu_status: Win11ClassicMenuStatus;
 }
 
 export interface DiagnosticsInfo {
@@ -271,11 +286,6 @@ export interface DiagnosticsInfo {
   app_version: string;
   build_channel: string;
   app_root?: string | null;
-  install_root?: string | null;
-  shell_exe?: string | null;
-  effective_config_root?: string | null;
-  resource_zip_path?: string | null;
-  install_status: InstallStatus;
   config_version: number;
   runtime: RuntimeState;
   terminal_mode_requested: string;
@@ -292,6 +302,28 @@ export interface DiagnosticsInfo {
   terminal_powershell_available: boolean;
   log_path?: string | null;
   log_tail: string[];
+  context_menu_status: ContextMenuStatus;
+  win11_classic_menu_status: Win11ClassicMenuStatus;
+  installed_menu_groups: InstalledMenuGroup[];
+  legacy_artifacts: LegacyArtifact[];
+}
+
+export interface RegistryValueSpec {
+  name?: string | null;
+  kind: "sz" | "dword";
+  data: string;
+}
+
+export interface RegistryKeySpec {
+  path: string;
+  values: RegistryValueSpec[];
+}
+
+export interface RegistryWritePlan {
+  schema_version: number;
+  owner: string;
+  deletes: string[];
+  creates: RegistryKeySpec[];
 }
 
 export const DEFAULT_INSTALL_TIMEOUTS: InstallTimeoutConfig = {
@@ -304,7 +336,7 @@ export const DEFAULT_INSTALL_TIMEOUTS: InstallTimeoutConfig = {
 };
 
 export const DEFAULT_CONFIG: AppConfig = {
-  version: 9,
+  version: 10,
   enable_context_menu: true,
   menu_title: "AI CLIs",
   cli_order: [...CLI_DEFAULT_ORDER],
@@ -317,15 +349,12 @@ export const DEFAULT_CONFIG: AppConfig = {
     qwencode: "Qwen Code",
     opencode: "OpenCode"
   },
-  show_nilesoft_default_menus: false,
   terminal_mode: "wt",
   terminal_theme_id: "vscode-dark-plus",
   terminal_theme_mode: "auto",
   ps_prompt_style: "basic",
   uv_install_source_mode: "auto",
   install_timeouts: { ...DEFAULT_INSTALL_TIMEOUTS },
-  advanced_menu_mode: false,
-  menu_theme_enabled: false,
   use_windows_terminal: true,
   no_exit: true,
   toggles: {

@@ -1,18 +1,19 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
-use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
 use crate::{
-    detect, embedded_terminal, explorer, logging, nilesoft, nilesoft_install, process_util, terminal,
+    context_menu_builder, context_menu_icons, context_menu_service, detect, embedded_terminal,
+    logging, process_util, shell_notify, terminal, win11_classic_menu,
     state::{
-        self, ActionResult, AppConfig, CliInstallHint, CliStatusMap, CliUserPathStatus, DiagnosticsInfo,
-        InitialState, InstallLaunchRequest, InstallPrereqStatus, InstallStatus, PowerShellPs1PolicyStatus,
+        self, ActionResult, AppConfig, CliInstallHint, CliStatusMap, CliUserPathStatus,
+        DiagnosticsInfo, InitialState, InstallLaunchRequest, InstallPrereqStatus,
+        PowerShellPs1PolicyStatus,
     },
 };
 
@@ -50,20 +51,6 @@ enum GitInstallSource {
 enum WingetInstallSource {
     Official,
     Tuna,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct HkcuMenuGroup {
-    pub key: String,
-    pub title: String,
-    pub roots: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct HkcuMenuGroupRow {
-    key: String,
-    title: String,
-    root: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -206,46 +193,9 @@ fn now_epoch_seconds() -> String {
         .unwrap_or_else(|_| "0".to_string())
 }
 
-fn ensure_install_ready(action: &str) -> Result<(PathBuf, PathBuf, InstallStatus), ActionResult> {
-    let install = nilesoft_install::inspect_installation();
-    if !install.installed {
-        return Err(ActionResult::err(
-            "install_required",
-            format!("{action}失败"),
-            "未检测到 Nilesoft，请先执行“安装/修复 Nilesoft”",
-        ));
-    }
-    if !install.registered {
-        return Err(ActionResult::err(
-            "register_required",
-            format!("{action}失败"),
-            "Nilesoft 尚未完成注册，请先执行提权重试",
-        ));
-    }
-
-    let install_root = nilesoft_install::resolve_install_root().map_err(|error| {
-        ActionResult::err(
-            "install_root_resolve_failed",
-            format!("{action}失败"),
-            error,
-        )
-    })?;
-    let shell_exe = nilesoft_install::find_shell_exe(&install_root).ok_or_else(|| {
-        ActionResult::err(
-            "shell_missing",
-            format!("{action}失败"),
-            "未找到 shell.exe，请先执行安装/修复",
-        )
-    })?;
-    Ok((install_root, shell_exe, install))
-}
-
 fn prepare_config_for_save(mut incoming: AppConfig, persisted_runtime: state::RuntimeState) -> AppConfig {
     incoming.version = state::CONFIG_VERSION;
-    incoming.show_nilesoft_default_menus = false;
     incoming.no_exit = true;
-    incoming.advanced_menu_mode = false;
-    incoming.menu_theme_enabled = false;
     // runtime 字段由后端维护，避免被前端旧状态覆盖。
     incoming.runtime = persisted_runtime;
     incoming
@@ -422,6 +372,14 @@ fn build_install_script(install_command: &str) -> String {
     )
 }
 
+fn refresh_context_menu_icons_best_effort() {
+    if let Err(error) = context_menu_icons::ensure_context_menu_icon_files() {
+        logging::log_line(&format!(
+            "[context-menu-icons] best-effort refresh failed: {error}"
+        ));
+    }
+}
+
 fn build_uninstall_script(uninstall_command: &str) -> String {
     format!(
         "$ErrorActionPreference='Continue'; {uninstall_command}; Write-Host ''; Write-Host '卸载命令已执行，请在该终端确认结果。'"
@@ -442,61 +400,6 @@ fn open_url_in_system_browser(url: &str) -> Result<(), String> {
         .spawn()
         .map_err(|error| format!("拉起系统浏览器失败: {error}"))?;
     Ok(())
-}
-
-fn summarize_action_result(result: &ActionResult) -> String {
-    let mut summary = format!("[{}] {}", result.code, result.message);
-    if let Some(detail) = result.detail.as_ref() {
-        if !detail.trim().is_empty() {
-            summary.push_str(": ");
-            summary.push_str(detail);
-        }
-    }
-    summary
-}
-
-fn aggregate_unregister_cleanup_result(
-    unregister_result: ActionResult,
-    cleanup_result: ActionResult,
-) -> ActionResult {
-    if cleanup_result.ok && unregister_result.ok {
-        return ActionResult {
-            ok: true,
-            code: "unregister_cleanup_done".to_string(),
-            message: "一键反注册清理完成".to_string(),
-            detail: cleanup_result
-                .detail
-                .or(unregister_result.detail)
-                .filter(|detail| !detail.trim().is_empty()),
-        };
-    }
-
-    if cleanup_result.ok && !unregister_result.ok {
-        let detail = [summarize_action_result(&unregister_result)]
-            .join("\n")
-            .trim()
-            .to_string();
-        return ActionResult {
-            ok: true,
-            code: "unregister_cleanup_partial".to_string(),
-            message: "应用数据已清理，但反注册未完成".to_string(),
-            detail: if detail.is_empty() { None } else { Some(detail) },
-        };
-    }
-
-    let detail = [
-        summarize_action_result(&unregister_result),
-        summarize_action_result(&cleanup_result),
-    ]
-    .join("\n")
-    .trim()
-    .to_string();
-    ActionResult {
-        ok: false,
-        code: "unregister_cleanup_failed".to_string(),
-        message: "一键反注册清理失败".to_string(),
-        detail: if detail.is_empty() { None } else { Some(detail) },
-    }
 }
 
 fn launch_elevated_powershell_install(command: &str) -> Result<String, String> {
@@ -745,194 +648,6 @@ fn is_ps1_policy_blocked(policy: &str) -> bool {
     policy.eq_ignore_ascii_case("Restricted")
 }
 
-fn cli_command_for_key(key: &str) -> Option<&'static str> {
-    match key {
-        "claude" => Some("claude"),
-        "codex" => Some("codex"),
-        "gemini" => Some("gemini"),
-        "kimi" => Some("kimi"),
-        "kimi_web" => Some("kimi web"),
-        "qwencode" => Some("qwen"),
-        "opencode" => Some("opencode"),
-        _ => None,
-    }
-}
-
-fn cli_menu_items_for_config(config: &AppConfig) -> Vec<(String, &'static str)> {
-    let mut items = Vec::new();
-    let mut seen = HashSet::new();
-    for key in &config.cli_order {
-        if !seen.insert(key.as_str()) {
-            continue;
-        }
-        let command = match cli_command_for_key(key.as_str()) {
-            Some(value) => value,
-            None => continue,
-        };
-        let enabled = match key.as_str() {
-            "claude" => config.toggles.claude,
-            "codex" => config.toggles.codex,
-            "gemini" => config.toggles.gemini,
-            "kimi" => config.toggles.kimi,
-            "kimi_web" => config.toggles.kimi_web,
-            "qwencode" => config.toggles.qwencode,
-            "opencode" => config.toggles.opencode,
-            _ => false,
-        };
-        if !enabled {
-            continue;
-        }
-        let title = match key.as_str() {
-            "claude" => config.display_names.claude.clone(),
-            "codex" => config.display_names.codex.clone(),
-            "gemini" => config.display_names.gemini.clone(),
-            "kimi" => config.display_names.kimi.clone(),
-            "kimi_web" => config.display_names.kimi_web.clone(),
-            "qwencode" => config.display_names.qwencode.clone(),
-            "opencode" => config.display_names.opencode.clone(),
-            _ => continue,
-        };
-        items.push((title, command));
-    }
-    items
-}
-
-fn shell_for_hkcu_menu() -> &'static str {
-    if detect::command_exists("pwsh") {
-        "pwsh.exe"
-    } else {
-        "powershell.exe"
-    }
-}
-
-fn build_hkcu_menu_script(config: &AppConfig) -> String {
-    let menu_name = escape_ps_single_quoted(&config.menu_title);
-    let shell = shell_for_hkcu_menu();
-    let items = cli_menu_items_for_config(config);
-    let mut script = vec![
-        "$ErrorActionPreference='Stop'".to_string(),
-        format!("$menuName = '{menu_name}'"),
-        "$roots = @(\"HKCU:\\Software\\Classes\\Directory\\Background\\shell\", \"HKCU:\\Software\\Classes\\Directory\\shell\", \"HKCU:\\Software\\Classes\\DesktopBackground\\shell\", \"HKCU:\\Software\\Classes\\Drive\\shell\")".to_string(),
-        "foreach ($root in $roots) {".to_string(),
-        "  $base = \"$root\\$menuName\"".to_string(),
-        "  New-Item -Path $base -Force | Out-Null".to_string(),
-        "  Set-ItemProperty -Path $base -Name 'MUIVerb' -Value $menuName -Force".to_string(),
-        "  Set-ItemProperty -Path $base -Name 'Icon' -Value 'powershell.exe,0' -Force".to_string(),
-        "  Set-ItemProperty -Path $base -Name 'SubCommands' -Value '' -Force".to_string(),
-        "  Remove-Item -Path \"$base\\shell\" -Recurse -Force -ErrorAction SilentlyContinue".to_string(),
-    ];
-
-    for (index, (title, command)) in items.iter().enumerate() {
-        let order = format!("{:02}", index + 1);
-        let title_escaped = escape_ps_single_quoted(title);
-        let launch = format!(
-            "{shell} -NoExit -ExecutionPolicy Bypass -Command \"Set-Location -LiteralPath ''%V''; {command}\""
-        );
-        let launch_escaped = escape_ps_single_quoted(&launch);
-        script.push(format!("  $sub = \"$base\\shell\\{order}.item\""));
-        script.push("  $cmd = \"$sub\\command\"".to_string());
-        script.push("  New-Item -Path $sub -Force | Out-Null".to_string());
-        script.push(format!(
-            "  Set-ItemProperty -Path $sub -Name 'MUIVerb' -Value '{title_escaped}' -Force"
-        ));
-        script.push("  New-Item -Path $cmd -Force | Out-Null".to_string());
-        script.push(format!(
-            "  Set-ItemProperty -Path $cmd -Name '(Default)' -Value '{launch_escaped}' -Force"
-        ));
-    }
-
-    script.push("}".to_string());
-    script.push("Write-Output 'hkcu_menu_applied'".to_string());
-    script.join("; ")
-}
-
-fn build_remove_hkcu_menu_script(menu_title: &str) -> String {
-    let menu_name = escape_ps_single_quoted(menu_title);
-    [
-        "$ErrorActionPreference='Stop'".to_string(),
-        format!("$menuName = '{menu_name}'"),
-        "$targets = @(\"HKCU:\\Software\\Classes\\Directory\\Background\\shell\\$menuName\", \"HKCU:\\Software\\Classes\\Directory\\shell\\$menuName\", \"HKCU:\\Software\\Classes\\DesktopBackground\\shell\\$menuName\", \"HKCU:\\Software\\Classes\\Drive\\shell\\$menuName\")".to_string(),
-        "foreach ($target in $targets) { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue }".to_string(),
-        "Write-Output 'hkcu_menu_removed'".to_string(),
-    ]
-    .join("; ")
-}
-
-fn build_list_hkcu_menu_groups_script() -> String {
-    [
-        "$ErrorActionPreference='Stop'".to_string(),
-        "$roots = @('HKCU:\\Software\\Classes\\Directory\\Background\\shell', 'HKCU:\\Software\\Classes\\Directory\\shell', 'HKCU:\\Software\\Classes\\DesktopBackground\\shell', 'HKCU:\\Software\\Classes\\Drive\\shell')".to_string(),
-        "$rows = New-Object System.Collections.Generic.List[Object]".to_string(),
-        "foreach ($root in $roots) {".to_string(),
-        "  if (!(Test-Path $root)) { continue }".to_string(),
-        "  foreach ($entry in Get-ChildItem -Path $root -ErrorAction SilentlyContinue) {".to_string(),
-        "    $base = $entry.PSPath".to_string(),
-        "    $shellPath = Join-Path $base 'shell'".to_string(),
-        "    if (!(Test-Path $shellPath)) { continue }".to_string(),
-        "    $cmdValues = @()".to_string(),
-        "    foreach ($sub in Get-ChildItem -Path $shellPath -ErrorAction SilentlyContinue) {".to_string(),
-        "      $cmdPath = Join-Path $sub.PSPath 'command'".to_string(),
-        "      if (!(Test-Path $cmdPath)) { continue }".to_string(),
-        "      $val = (Get-ItemProperty -LiteralPath $cmdPath -Name '(Default)' -ErrorAction SilentlyContinue).'(Default)'".to_string(),
-        "      if ($val -is [string] -and $val.Length -gt 0) { $cmdValues += $val }".to_string(),
-        "    }".to_string(),
-        "    if ($cmdValues.Count -eq 0) { continue }".to_string(),
-        "    $joined = ($cmdValues -join \"`n\")".to_string(),
-        "    $hasCliToken = $joined -match '(claude|codex|gemini|kimi|qwen|opencode)'".to_string(),
-        "    $hasExeclinkMarker = ($joined -match \"Set-Location -LiteralPath ''%V'';\") -or ($joined -match '(ExecLink|ExeLink|AI-CLI-Switch|execlink)')".to_string(),
-        "    if (-not ($hasCliToken -and $hasExeclinkMarker)) { continue }".to_string(),
-        "    $muiVerb = (Get-ItemProperty -LiteralPath $base -Name 'MUIVerb' -ErrorAction SilentlyContinue).MUIVerb".to_string(),
-        "    if ([string]::IsNullOrWhiteSpace($muiVerb)) { $muiVerb = $entry.PSChildName }".to_string(),
-        "    $rows.Add([PSCustomObject]@{ key = $entry.PSChildName; title = $muiVerb; root = $root }) | Out-Null".to_string(),
-        "  }".to_string(),
-        "}".to_string(),
-        "if ($rows.Count -eq 0) { Write-Output '[]'; exit 0 }".to_string(),
-        "$json = $rows | Sort-Object key, root -Unique | ConvertTo-Json -Compress -Depth 4".to_string(),
-        "$escaped = [System.Text.RegularExpressions.Regex]::Replace($json, '[^\\u0000-\\u007F]', { param($m) ('\\u{0:x4}' -f [int][char]$m.Value) })".to_string(),
-        "Write-Output $escaped".to_string(),
-    ]
-    .join("; ")
-}
-
-fn parse_hkcu_menu_groups(output: &str) -> Result<Vec<HkcuMenuGroup>, String> {
-    let trimmed = output.trim();
-    if trimmed.is_empty() || trimmed == "null" {
-        return Ok(Vec::new());
-    }
-
-    let rows = if trimmed.starts_with('[') {
-        serde_json::from_str::<Vec<HkcuMenuGroupRow>>(trimmed)
-            .map_err(|error| format!("解析分组列表失败: {error}; raw={trimmed}"))?
-    } else if trimmed.starts_with('{') {
-        vec![
-            serde_json::from_str::<HkcuMenuGroupRow>(trimmed)
-                .map_err(|error| format!("解析分组对象失败: {error}; raw={trimmed}"))?,
-        ]
-    } else {
-        return Err(format!("分组输出格式异常: {trimmed}"));
-    };
-
-    let mut grouped: BTreeMap<String, HkcuMenuGroup> = BTreeMap::new();
-    for row in rows {
-        if row.key.trim().is_empty() {
-            continue;
-        }
-        let entry = grouped.entry(row.key.clone()).or_insert_with(|| HkcuMenuGroup {
-            key: row.key.clone(),
-            title: row.title.clone(),
-            roots: Vec::new(),
-        });
-        if !entry.roots.iter().any(|root| root == &row.root) {
-            entry.roots.push(row.root);
-        }
-        if entry.title.trim().is_empty() && !row.title.trim().is_empty() {
-            entry.title = row.title;
-        }
-    }
-
-    Ok(grouped.into_values().collect())
-}
-
 fn run_powershell_script(script: &str) -> Result<String, String> {
     fn decode_utf16(bytes: &[u8], little_endian: bool) -> Option<String> {
         if bytes.len() < 2 {
@@ -1021,32 +736,21 @@ fn run_powershell_script(script: &str) -> Result<String, String> {
     Err(detail)
 }
 
-fn filter_config_toggles_by_detection(config: &AppConfig, detected: &CliStatusMap) -> AppConfig {
-    let mut filtered = config.clone();
-    filtered.toggles.claude = filtered.toggles.claude && detected.claude;
-    filtered.toggles.codex = filtered.toggles.codex && detected.codex;
-    filtered.toggles.gemini = filtered.toggles.gemini && detected.gemini;
-    filtered.toggles.kimi = filtered.toggles.kimi && detected.kimi;
-    filtered.toggles.kimi_web = filtered.toggles.kimi_web && detected.kimi_web;
-    filtered.toggles.qwencode = filtered.toggles.qwencode && detected.qwencode;
-    filtered.toggles.opencode = filtered.toggles.opencode && detected.opencode;
-    filtered
-}
-
-fn normalize_path_for_compare(path: &std::path::Path) -> String {
-    path.to_string_lossy().replace('/', "\\").to_ascii_lowercase()
-}
-
 #[tauri::command]
 pub fn get_initial_state() -> InitialState {
+    refresh_context_menu_icons_best_effort();
     let config = state::load_app_config();
     let cli_status = detect::detect_all_clis();
-    let install_status = nilesoft_install::inspect_installation();
+    let context_menu_status = context_menu_service::inspect_context_menu_status()
+        .unwrap_or_else(|error| state::ContextMenuStatus::empty(error));
+    let win11_classic_menu_status = win11_classic_menu::inspect_status()
+        .unwrap_or_else(|error| state::Win11ClassicMenuStatus::empty(error));
 
     InitialState {
         config,
         cli_status,
-        install_status,
+        context_menu_status,
+        win11_classic_menu_status,
     }
 }
 
@@ -1727,257 +1431,6 @@ pub fn open_winget_install_page() -> ActionResult {
 }
 
 #[tauri::command]
-pub fn ensure_nilesoft_installed(app: AppHandle) -> Result<InstallStatus, String> {
-    nilesoft_install::ensure_installed(&app)
-}
-
-#[tauri::command]
-pub fn one_click_install_repair(app: AppHandle, config: AppConfig) -> ActionResult {
-    logging::log_line("[one-click-maintenance] start");
-    let normalized = prepare_config_for_save(config, state::load_app_config().runtime);
-    let mut detail_lines: Vec<String> = Vec::new();
-
-    logging::log_line("[one-click-maintenance] stage=install begin");
-    let mut install_state = match nilesoft_install::ensure_installed(&app) {
-        Ok(state) => {
-            detail_lines.push(format!("[install] {}", state.message));
-            logging::log_line(&format!(
-                "[one-click-maintenance] stage=install done installed={} registered={} needs_elevation={}",
-                state.installed, state.registered, state.needs_elevation
-            ));
-            state
-        }
-        Err(error) => {
-            logging::log_line(&format!(
-                "[one-click-maintenance] stage=install failed error={error}"
-            ));
-            return ActionResult::err(
-                "maintenance_install_failed",
-                "一键维护失败：安装/修复阶段失败",
-                format!("安装/修复阶段失败: {error}"),
-            )
-        }
-    };
-
-    if !install_state.registered || install_state.needs_elevation {
-        logging::log_line("[one-click-maintenance] stage=register begin");
-        let elevated = request_elevation_and_register();
-        detail_lines.push(format!("[register] {}", summarize_action_result(&elevated)));
-        install_state = nilesoft_install::inspect_installation();
-        detail_lines.push(format!("[recheck] {}", install_state.message));
-        logging::log_line(&format!(
-            "[one-click-maintenance] stage=recheck installed={} registered={} needs_elevation={}",
-            install_state.installed, install_state.registered, install_state.needs_elevation
-        ));
-        if !elevated.ok {
-            if !install_state.installed || !install_state.registered || install_state.needs_elevation {
-                logging::log_line(&format!(
-                    "[one-click-maintenance] stage=register failed code={} message={}",
-                    elevated.code, elevated.message
-                ));
-                return ActionResult {
-                    ok: false,
-                    code: "maintenance_register_incomplete".to_string(),
-                    message: "一键维护失败：提权注册失败".to_string(),
-                    detail: Some(detail_lines.join("\n")),
-                };
-            }
-            detail_lines.push(
-                "[register] 提权命令返回异常，但复检确认注册已完成，继续后续流程".to_string(),
-            );
-            logging::log_line(
-                "[one-click-maintenance] stage=register command reported error but recheck passed",
-            );
-        }
-    }
-
-    if !install_state.installed || !install_state.registered || install_state.needs_elevation {
-        detail_lines.push(format!(
-            "[recheck] installed={} registered={} needs_elevation={}",
-            install_state.installed, install_state.registered, install_state.needs_elevation
-        ));
-        logging::log_line("[one-click-maintenance] stage=recheck failed status inconsistent");
-        return ActionResult {
-            ok: false,
-            code: "maintenance_register_incomplete".to_string(),
-            message: "一键维护未完成".to_string(),
-            detail: Some(detail_lines.join("\n")),
-        };
-    }
-
-    logging::log_line("[one-click-maintenance] stage=apply begin");
-    let apply_result = apply_config(normalized.clone());
-    detail_lines.push(format!("[apply] {}", summarize_action_result(&apply_result)));
-    if apply_result.ok {
-        logging::log_line("[one-click-maintenance] stage=apply done, stage=activate begin");
-        let activate_result = activate_now();
-        detail_lines.push(format!(
-            "[activate] {}",
-            summarize_action_result(&activate_result)
-        ));
-        if activate_result.ok {
-            logging::log_line("[one-click-maintenance] stage=activate done, finish=success");
-            return ActionResult {
-                ok: true,
-                code: "maintenance_done".to_string(),
-                message: "一键维护完成（检测 / 安装 / 注册 / 修复）".to_string(),
-                detail: Some(detail_lines.join("\n")),
-            };
-        }
-    }
-
-    logging::log_line("[one-click-maintenance] stage=fallback_hkcu begin");
-    let fallback_result = repair_context_menu_hkcu(normalized);
-    detail_lines.push(format!(
-        "[fallback_hkcu] {}",
-        summarize_action_result(&fallback_result)
-    ));
-    if !fallback_result.ok {
-        logging::log_line("[one-click-maintenance] stage=fallback_hkcu failed");
-        return ActionResult {
-            ok: false,
-            code: "maintenance_menu_sync_failed".to_string(),
-            message: "一键维护失败：菜单同步失败".to_string(),
-            detail: Some(detail_lines.join("\n")),
-        };
-    }
-
-    logging::log_line("[one-click-maintenance] stage=refresh_explorer begin");
-    let refresh_result = refresh_explorer();
-    detail_lines.push(format!(
-        "[refresh_explorer] {}",
-        summarize_action_result(&refresh_result)
-    ));
-    if !refresh_result.ok {
-        logging::log_line("[one-click-maintenance] stage=refresh_explorer failed");
-        return ActionResult {
-            ok: false,
-            code: "maintenance_menu_sync_failed".to_string(),
-            message: "一键维护失败：菜单同步失败".to_string(),
-            detail: Some(detail_lines.join("\n")),
-        };
-    }
-
-    logging::log_line("[one-click-maintenance] finish=success_with_hkcu_fallback");
-    ActionResult {
-        ok: true,
-        code: "maintenance_done".to_string(),
-        message: "一键维护完成（检测 / 安装 / 注册 / 修复）".to_string(),
-        detail: Some(detail_lines.join("\n")),
-    }
-}
-
-#[tauri::command]
-pub fn request_elevation_and_register() -> ActionResult {
-    let Some(shell_exe) = nilesoft_install::locate_shell_exe() else {
-        return ActionResult::err(
-            "shell_missing",
-            "提权注册失败",
-            "未找到 shell.exe，请先执行安装",
-        );
-    };
-
-    match nilesoft_install::register_elevated(&shell_exe) {
-        Ok(_) => {
-            nilesoft_install::mark_register_success(&shell_exe);
-            ActionResult::ok("提权注册成功")
-        }
-        Err(error) => {
-            let recheck = nilesoft_install::inspect_installation();
-            if recheck.installed && recheck.registered && !recheck.needs_elevation {
-                nilesoft_install::mark_register_success(&shell_exe);
-                return ActionResult {
-                    ok: true,
-                    code: "register_elevated_recheck_ok".to_string(),
-                    message: "提权注册已通过复检确认成功".to_string(),
-                    detail: Some(format!(
-                        "原始返回异常: {error}\n复检结果: {}",
-                        recheck.message
-                    )),
-                };
-            }
-            nilesoft_install::mark_register_failure(&shell_exe, error.clone());
-            let _ = state::mark_runtime_error(format!("register_elevated: {error}"));
-            ActionResult::err("register_elevated_failed", "提权注册失败", error)
-        }
-    }
-}
-
-#[tauri::command]
-pub fn attempt_unregister_nilesoft() -> ActionResult {
-    let install = nilesoft_install::inspect_installation();
-    if !install.installed {
-        return ActionResult::err(
-            "install_required",
-            "恢复失败",
-            "未检测到 Nilesoft，请先执行“安装/修复 Nilesoft”确认当前状态。",
-        );
-    }
-
-    let Some(shell_exe) = nilesoft_install::locate_shell_exe() else {
-        return ActionResult::err(
-            "shell_missing",
-            "恢复失败",
-            "未找到 shell.exe，无法执行反注册。",
-        );
-    };
-
-    let build_success = |code: &str, message: &str, primary_detail: Option<String>| {
-        let clear_detail = match nilesoft_install::clear_register_state() {
-            Ok(_) => None,
-            Err(error) => {
-                logging::log_line(&format!(
-                    "[install] unregister succeeded but clear register state failed: {error}"
-                ));
-                Some(error)
-            }
-        };
-
-        let detail = match (primary_detail, clear_detail) {
-            (Some(a), Some(b)) => Some(format!("{a}\n{b}")),
-            (Some(a), None) => Some(a),
-            (None, Some(b)) => Some(b),
-            (None, None) => None,
-        };
-
-        ActionResult {
-            ok: true,
-            code: code.to_string(),
-            message: message.to_string(),
-            detail,
-        }
-    };
-
-    match nilesoft_install::attempt_unregister(&shell_exe) {
-        Ok(nilesoft_install::UnregisterResult::Done) => {
-            build_success("unregister_done", "已尝试执行反注册。", None)
-        }
-        Ok(nilesoft_install::UnregisterResult::NotSupported(detail)) => ActionResult::err(
-            "unregister_not_supported",
-            "当前 Nilesoft 版本可能不支持反注册参数",
-            detail,
-        ),
-        Err(normal_error) => match nilesoft_install::attempt_unregister_elevated(&shell_exe) {
-            Ok(nilesoft_install::UnregisterResult::Done) => build_success(
-                "unregister_done_elevated",
-                "普通权限反注册失败，已提权执行反注册。",
-                Some(format!("普通权限失败详情: {normal_error}")),
-            ),
-            Ok(nilesoft_install::UnregisterResult::NotSupported(detail)) => ActionResult::err(
-                "unregister_not_supported",
-                "当前 Nilesoft 版本可能不支持反注册参数",
-                format!("普通权限失败详情: {normal_error}\n提权结果: {detail}"),
-            ),
-            Err(elevated_error) => ActionResult::err(
-                "unregister_failed",
-                "反注册执行失败",
-                format!("普通权限失败详情: {normal_error}\n提权失败详情: {elevated_error}"),
-            ),
-        },
-    }
-}
-
-#[tauri::command]
 pub fn cleanup_app_data(confirm_token: Option<String>) -> ActionResult {
     if confirm_token.as_deref() != Some(CLEANUP_CONFIRM_TOKEN) {
         return ActionResult::err(
@@ -2028,219 +1481,183 @@ pub fn cleanup_app_data(confirm_token: Option<String>) -> ActionResult {
     ActionResult::ok_with_code("cleanup_done", format!("已清理应用数据目录：{removed}"))
 }
 
-#[tauri::command]
-pub fn one_click_unregister_cleanup(confirm_token: Option<String>) -> ActionResult {
-    if confirm_token.as_deref() != Some(CLEANUP_CONFIRM_TOKEN) {
-        return ActionResult::err(
-            "cleanup_confirm_required",
-            "清理应用数据需要二次确认",
-            "请在确认后重试。",
-        );
-    }
-
-    let unregister_result = attempt_unregister_nilesoft();
-    let cleanup_result = cleanup_app_data(confirm_token);
-    aggregate_unregister_cleanup_result(unregister_result, cleanup_result)
-}
 
 #[tauri::command]
-pub fn repair_context_menu_hkcu(config: AppConfig) -> ActionResult {
+pub fn preview_context_menu_plan(config: AppConfig) -> Result<context_menu_builder::RegistryWritePlan, String> {
     let normalized = prepare_config_for_save(config, state::load_app_config().runtime);
-    let script = build_hkcu_menu_script(&normalized);
-    match run_powershell_script(&script) {
-        Ok(output) => {
-            logging::log_line(&format!(
-                "[menu-fallback] hkcu menu repaired title={} output={}",
-                normalized.menu_title, output
-            ));
-            ActionResult {
-                ok: true,
-                code: "menu_fallback_applied".to_string(),
-                message: "已应用 HKCU 右键菜单兜底修复".to_string(),
-                detail: Some(output),
-            }
-        }
-        Err(error) => ActionResult::err("menu_fallback_failed", "应用 HKCU 右键菜单失败", error),
-    }
+    context_menu_service::preview_registry_write_plan(&normalized)
 }
 
 #[tauri::command]
-pub fn remove_context_menu_hkcu(menu_title: Option<String>) -> ActionResult {
-    let title = menu_title
-        .unwrap_or_else(|| state::load_app_config().menu_title)
-        .trim()
-        .to_string();
-    if title.is_empty() {
-        return ActionResult::err("menu_title_invalid", "移除 HKCU 菜单失败", "菜单标题不能为空");
-    }
-    let script = build_remove_hkcu_menu_script(&title);
-    match run_powershell_script(&script) {
-        Ok(output) => {
-            logging::log_line(&format!(
-                "[menu-fallback] hkcu menu removed title={} output={}",
-                title, output
-            ));
-            ActionResult {
-                ok: true,
-                code: "menu_fallback_removed".to_string(),
-                message: "已移除 HKCU 右键菜单兜底项".to_string(),
-                detail: Some(output),
-            }
-        }
-        Err(error) => ActionResult::err("menu_fallback_remove_failed", "移除 HKCU 菜单失败", error),
-    }
+pub fn list_execlink_context_menus() -> Result<Vec<state::InstalledMenuGroup>, String> {
+    context_menu_service::list_installed_menu_groups()
 }
 
 #[tauri::command]
-pub fn list_context_menu_groups_hkcu() -> Result<Vec<HkcuMenuGroup>, String> {
-    let script = build_list_hkcu_menu_groups_script();
-    let output = run_powershell_script(&script)?;
-    parse_hkcu_menu_groups(&output)
+pub fn detect_legacy_menu_artifacts() -> Result<Vec<state::LegacyArtifact>, String> {
+    context_menu_service::detect_legacy_artifacts()
 }
 
 #[tauri::command]
-pub fn refresh_explorer() -> ActionResult {
-    let script = "taskkill /f /im explorer.exe | Out-Null; Start-Process explorer.exe | Out-Null; Write-Output 'explorer_refreshed'";
-    match run_powershell_script(script) {
-        Ok(output) => ActionResult {
+pub fn remove_all_execlink_context_menus() -> ActionResult {
+    match context_menu_service::remove_all_context_menus() {
+        Ok(removed) => ActionResult {
             ok: true,
-            code: "explorer_refreshed".to_string(),
-            message: "已刷新资源管理器".to_string(),
-            detail: Some(output),
+            code: "context_menu_removed".to_string(),
+            message: "已移除 ExecLink 右键菜单".to_string(),
+            detail: Some(format!("共删除 {} 个注册表路径。", removed)),
         },
-        Err(error) => ActionResult::err("explorer_refresh_failed", "刷新资源管理器失败", error),
+        Err(error) => ActionResult::err("context_menu_remove_failed", "移除 ExecLink 右键菜单失败", error),
+    }
+}
+
+#[tauri::command]
+pub fn notify_shell_changed() -> ActionResult {
+    match shell_notify::notify_shell_changed() {
+        Ok(()) => {
+            let _ = state::mark_activate_success();
+            ActionResult::ok_with_code("shell_notified", "已通知 Explorer 刷新右键菜单")
+        }
+        Err(error) => {
+            let _ = state::mark_runtime_error(format!("shell_notify_failed: {error}"));
+            ActionResult::err("shell_notify_failed", "通知 Explorer 刷新失败", error)
+        }
+    }
+}
+
+#[tauri::command]
+pub fn restart_explorer_fallback() -> ActionResult {
+    match shell_notify::restart_explorer_fallback() {
+        Ok(()) => ActionResult::ok_with_code("explorer_restarted", "已重启 Explorer"),
+        Err(error) => ActionResult::err("explorer_restart_failed", "重启 Explorer 失败", error),
+    }
+}
+
+#[tauri::command]
+pub fn migrate_legacy_hkcu_menu_to_v2() -> ActionResult {
+    let config = state::load_app_config();
+    match context_menu_service::migrate_legacy_to_v2(&config) {
+        Ok(report) => ActionResult {
+            ok: true,
+            code: "legacy_migrated".to_string(),
+            message: "已迁移 legacy HKCU 菜单到 v2".to_string(),
+            detail: Some(format!(
+                "迁移 legacy 路径 {} 个，写入新键 {} 个。",
+                report.migrated_legacy_paths, report.written_keys
+            )),
+        },
+        Err(error) => ActionResult::err("legacy_migration_failed", "迁移 legacy 菜单失败", error),
+    }
+}
+
+#[tauri::command]
+pub fn cleanup_nilesoft_artifacts() -> ActionResult {
+    match context_menu_service::cleanup_nilesoft_artifacts() {
+        Ok(summary) => ActionResult {
+            ok: true,
+            code: "nilesoft_artifacts_cleaned".to_string(),
+            message: "已清理旧 Nilesoft 残留".to_string(),
+            detail: Some(format!(
+                "删除注册表路径 {} 个，删除运行时目录 {} 个。",
+                summary.removed_registry_paths, summary.removed_runtime_dirs
+            )),
+        },
+        Err(error) => ActionResult::err("nilesoft_artifacts_cleanup_failed", "清理旧 Nilesoft 残留失败", error),
+    }
+}
+
+#[tauri::command]
+pub fn enable_win11_classic_context_menu() -> ActionResult {
+    match win11_classic_menu::enable() {
+        Ok(status) => ActionResult {
+            ok: true,
+            code: "win11_classic_menu_enabled".to_string(),
+            message: "已启用 Win11 经典右键菜单".to_string(),
+            detail: Some(format!(
+                "{}\n注册表路径：{}",
+                status.message, status.registry_path
+            )),
+        },
+        Err(error) => ActionResult::err(
+            "win11_classic_menu_enable_failed",
+            "启用 Win11 经典右键菜单失败",
+            error,
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn disable_win11_classic_context_menu() -> ActionResult {
+    match win11_classic_menu::disable() {
+        Ok(status) => ActionResult {
+            ok: true,
+            code: "win11_classic_menu_disabled".to_string(),
+            message: "已恢复 Win11 原生顶层右键菜单".to_string(),
+            detail: Some(format!(
+                "{}\n注册表路径：{}",
+                status.message, status.registry_path
+            )),
+        },
+        Err(error) => ActionResult::err(
+            "win11_classic_menu_disable_failed",
+            "恢复 Win11 原生顶层右键菜单失败",
+            error,
+        ),
     }
 }
 
 #[tauri::command]
 pub fn apply_config(config: AppConfig) -> ActionResult {
     let config = prepare_config_for_save(config, state::load_app_config().runtime);
-
     if let Err(error) = state::save_app_config(&config) {
         return ActionResult::err("save_config_failed", "保存配置失败", error);
     }
+
     let config = state::load_app_config();
-
-    let (install_root, shell_exe, _) = match ensure_install_ready("应用配置") {
-        Ok(value) => value,
-        Err(error) => {
-            let _ = state::mark_runtime_error(format!("apply_precheck_failed: {}", error.message));
-            return error;
-        }
-    };
-
-    let resolved = match nilesoft::resolve_effective_config_root(&shell_exe, &install_root) {
-        Ok(value) => value,
-        Err(error) => {
-            return ActionResult::err("config_root_resolve_failed", "应用配置失败", error)
-        }
-    };
-
-    let terminal_resolution = match nilesoft::apply_config(&resolved.root, &config) {
-        Ok(value) => value,
-        Err(error) => {
-            let _ = state::mark_runtime_error(format!("apply_config_failed: {error}"));
-            return ActionResult::err("apply_failed", "写入配置失败", error);
-        }
-    };
-
-    let mut written_roots = vec![resolved.root.display().to_string()];
-    if let Some(registered_root) = nilesoft_install::registered_shell_root_dir() {
-        let primary_norm = normalize_path_for_compare(&resolved.root);
-        let registered_norm = normalize_path_for_compare(&registered_root);
-        if primary_norm != registered_norm {
-            logging::log_line(&format!(
-                "[config] registered shell root differs from install root, write both: primary={} registered={}",
-                resolved.root.display(),
-                registered_root.display()
-            ));
-            if let Err(error) = nilesoft::apply_config(&registered_root, &config) {
-                let _ = state::mark_runtime_error(format!("apply_registered_root_failed: {error}"));
-                return ActionResult::err(
-                    "apply_registered_root_failed",
-                    "写入配置失败",
-                    format!(
-                        "主路径已写入，但系统当前注册路径写入失败: {}; 错误: {}",
-                        registered_root.display(),
-                        error
-                    ),
-                );
-            }
-            written_roots.push(registered_root.display().to_string());
-        }
-    }
-
-    let _ = state::mark_apply_success();
-    let mut message = format!(
-        "配置已写入 {}（layout={}，terminal={}）",
-        written_roots
-            .iter()
-            .map(|root| format!("{root}/imports/ai-clis.nss"))
-            .collect::<Vec<_>>()
-            .join("；"),
-        resolved.layout,
-        terminal_resolution.effective_mode
-    );
-    if terminal_resolution.fallback_reason.is_some() {
-        message.push_str("，已自动回退到可用终端");
-    }
-    if written_roots.len() > 1 {
-        message.push_str("；检测到系统注册目录与当前安装目录不一致，已自动双写以确保生效");
-    }
-
-    ActionResult::ok(message)
-}
-
-#[tauri::command]
-pub fn activate_now() -> ActionResult {
-    let (_, shell_exe, _) = match ensure_install_ready("立即生效") {
-        Ok(value) => value,
-        Err(error) => {
-            let _ = state::mark_runtime_error(format!("activate_precheck_failed: {}", error.message));
-            return error;
-        }
-    };
-
-    match explorer::activate_now(&shell_exe) {
-        Ok(message) => {
+    match context_menu_service::apply_context_menu(&config) {
+        Ok(report) => {
+            let _ = state::mark_apply_success();
             let _ = state::mark_activate_success();
-            ActionResult::ok(message)
+            ActionResult {
+                ok: true,
+                code: "context_menu_applied".to_string(),
+                message: if report.group_count == 0 {
+                    if config.enable_context_menu {
+                        "未检测到已安装 CLI，已跳过生成 ExecLink 右键菜单".to_string()
+                    } else {
+                        "已移除 ExecLink 右键菜单".to_string()
+                    }
+                } else {
+                    "已应用 ExecLink v2 右键菜单".to_string()
+                },
+                detail: Some(format!(
+                    "删除路径 {} 个，写入键 {} 个。",
+                    report.removed_paths, report.written_keys
+                )),
+            }
         }
         Err(error) => {
-            let _ = state::mark_runtime_error(format!("activate_failed: {error}"));
-            ActionResult::err("activate_failed", "立即生效失败", error)
+            let _ = state::mark_runtime_error(format!("apply_context_menu_failed: {error}"));
+            ActionResult::err("context_menu_apply_failed", "应用右键菜单失败", error)
         }
     }
 }
 
 #[tauri::command]
-pub fn get_diagnostics(app: AppHandle) -> DiagnosticsInfo {
+pub fn get_diagnostics(_app: AppHandle) -> DiagnosticsInfo {
     let config = state::load_app_config();
     let terminal_plan = terminal::build_launch_plan(&config);
     let terminal_resolution = terminal_plan.resolution();
     let terminal_capabilities = terminal_plan.capabilities().clone();
-    let install_status = nilesoft_install::inspect_installation();
-    let app_root = state::app_root_dir().ok().map(|p| p.display().to_string());
-    let install_root = nilesoft_install::resolve_install_root()
-        .ok()
-        .map(|p| p.display().to_string());
-    let shell_exe = nilesoft_install::locate_shell_exe().map(|p| p.display().to_string());
-
-    let effective_config_root = match (
-        nilesoft_install::resolve_install_root().ok(),
-        nilesoft_install::locate_shell_exe(),
-    ) {
-        (Some(root), Some(shell)) => nilesoft::resolve_effective_config_root(&shell, &root)
-            .ok()
-            .map(|r| r.root.display().to_string()),
-        _ => None,
-    };
-
     let log_path = logging::log_file_path().map(|p| p.display().to_string());
     let log_tail = logging::read_tail_lines(80);
-    let resource_zip_path = nilesoft_install::resolve_resource_zip(&app)
-        .ok()
-        .map(|p| p.display().to_string());
+    let context_menu_status = context_menu_service::inspect_context_menu_status()
+        .unwrap_or_else(|error| state::ContextMenuStatus::empty(error));
+    let win11_classic_menu_status = win11_classic_menu::inspect_status()
+        .unwrap_or_else(|error| state::Win11ClassicMenuStatus::empty(error));
+    let installed_menu_groups =
+        context_menu_service::list_installed_menu_groups().unwrap_or_default();
+    let legacy_artifacts = context_menu_service::detect_legacy_artifacts().unwrap_or_default();
 
     DiagnosticsInfo {
         generated_at: now_epoch_seconds(),
@@ -2250,12 +1667,7 @@ pub fn get_diagnostics(app: AppHandle) -> DiagnosticsInfo {
         } else {
             "release".to_string()
         },
-        app_root,
-        install_root,
-        shell_exe,
-        effective_config_root,
-        resource_zip_path,
-        install_status,
+        app_root: state::app_root_dir().ok().map(|p| p.display().to_string()),
         config_version: config.version,
         runtime: config.runtime,
         terminal_mode_requested: terminal_resolution.requested_mode,
@@ -2272,6 +1684,10 @@ pub fn get_diagnostics(app: AppHandle) -> DiagnosticsInfo {
         terminal_powershell_available: terminal_capabilities.powershell,
         log_path,
         log_tail,
+        context_menu_status,
+        win11_classic_menu_status,
+        installed_menu_groups,
+        legacy_artifacts,
     }
 }
 
@@ -2303,36 +1719,30 @@ pub fn toggle_context_menu_and_apply() -> ActionResult {
 }
 
 pub fn activate_now_from_tray() -> ActionResult {
-    let applied = apply_saved_config();
-    if !applied.ok {
-        return applied;
-    }
-    activate_now()
+    notify_shell_changed()
 }
 
 #[tauri::command]
 pub fn run_startup_check() -> ActionResult {
-    let install = nilesoft_install::inspect_installation();
-    logging::log_line(&format!(
-        "[startup] startup check: installed={} registered={}",
-        install.installed, install.registered
-    ));
-    ActionResult::ok("启动检查完成")
+    refresh_context_menu_icons_best_effort();
+    match context_menu_service::inspect_context_menu_status() {
+        Ok(status) => {
+            let win11_status = win11_classic_menu::inspect_status()
+                .unwrap_or_else(|error| state::Win11ClassicMenuStatus::empty(error));
+            logging::log_line(&format!(
+                "[startup] context menu applied={} legacy={} win11_classic_menu={}",
+                status.applied, status.has_legacy_artifacts, win11_status.enabled
+            ));
+            ActionResult::ok("启动检查完成")
+        }
+        Err(error) => ActionResult::err("startup_check_failed", "启动检查失败", error),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::state::{AppConfig, RuntimeState};
-
-    fn result(ok: bool, code: &str, message: &str, detail: Option<&str>) -> ActionResult {
-        ActionResult {
-            ok,
-            code: code.to_string(),
-            message: message.to_string(),
-            detail: detail.map(str::to_string),
-        }
-    }
 
     #[test]
     fn should_preserve_runtime_state_when_preparing_config() {
@@ -2358,44 +1768,6 @@ mod tests {
         let result = cleanup_app_data(None);
         assert!(!result.ok);
         assert_eq!(result.code, "cleanup_confirm_required");
-    }
-
-    #[test]
-    fn should_aggregate_unregister_cleanup_done() {
-        let unregister = result(true, "unregister_done", "反注册完成", Some("u ok"));
-        let cleanup = result(true, "cleanup_done", "清理完成", Some("c ok"));
-        let merged = aggregate_unregister_cleanup_result(unregister, cleanup);
-        assert!(merged.ok);
-        assert_eq!(merged.code, "unregister_cleanup_done");
-        assert_eq!(merged.message, "一键反注册清理完成");
-        assert_eq!(merged.detail.as_deref(), Some("c ok"));
-    }
-
-    #[test]
-    fn should_aggregate_unregister_cleanup_partial_when_cleanup_ok() {
-        let unregister = result(false, "unregister_failed", "反注册失败", Some("need admin"));
-        let cleanup = result(true, "cleanup_done", "清理完成", Some("c ok"));
-        let merged = aggregate_unregister_cleanup_result(unregister, cleanup);
-        assert!(merged.ok);
-        assert_eq!(merged.code, "unregister_cleanup_partial");
-        assert_eq!(merged.message, "应用数据已清理，但反注册未完成");
-        let detail = merged.detail.unwrap_or_default();
-        assert!(detail.contains("[unregister_failed] 反注册失败"));
-        assert!(detail.contains("need admin"));
-    }
-
-    #[test]
-    fn should_aggregate_unregister_cleanup_failed_when_cleanup_failed() {
-        let unregister = result(true, "unregister_done", "反注册完成", Some("u ok"));
-        let cleanup = result(false, "cleanup_failed", "清理失败", Some("access denied"));
-        let merged = aggregate_unregister_cleanup_result(unregister, cleanup);
-        assert!(!merged.ok);
-        assert_eq!(merged.code, "unregister_cleanup_failed");
-        assert_eq!(merged.message, "一键反注册清理失败");
-        let detail = merged.detail.unwrap_or_default();
-        assert!(detail.contains("[unregister_done] 反注册完成"));
-        assert!(detail.contains("[cleanup_failed] 清理失败"));
-        assert!(detail.contains("access denied"));
     }
 
     #[test]
@@ -2523,37 +1895,6 @@ mod tests {
         assert!(command.contains("C:\\Users\\tester\\AppData\\Roaming\\npm"));
     }
 
-    #[test]
-    fn should_filter_undetected_toggles_before_render() {
-        let mut config = AppConfig::default();
-        config.toggles.claude = true;
-        config.toggles.codex = true;
-        config.toggles.gemini = true;
-        config.toggles.kimi = true;
-        config.toggles.kimi_web = true;
-        config.toggles.qwencode = true;
-        config.toggles.opencode = true;
-
-        let detected = CliStatusMap {
-            claude: true,
-            codex: false,
-            gemini: true,
-            kimi: false,
-            kimi_web: false,
-            qwencode: true,
-            opencode: false,
-            pwsh: true,
-        };
-
-        let filtered = filter_config_toggles_by_detection(&config, &detected);
-        assert!(filtered.toggles.claude);
-        assert!(!filtered.toggles.codex);
-        assert!(filtered.toggles.gemini);
-        assert!(!filtered.toggles.kimi);
-        assert!(!filtered.toggles.kimi_web);
-        assert!(filtered.toggles.qwencode);
-        assert!(!filtered.toggles.opencode);
-    }
 }
 
 

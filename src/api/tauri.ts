@@ -5,15 +5,16 @@ import type {
   CliInstallHintMap,
   CliUserPathStatusMap,
   CliStatusMap,
+  ContextMenuStatus,
   DiagnosticsInfo,
   GitInstallSource,
   WingetInstallSource,
   CliKey,
-  HkcuMenuGroup,
+  InstalledMenuGroup,
   InstallLaunchRequest,
   InstallPrereqStatus,
   InitialState,
-  InstallStatus,
+  LegacyArtifact,
   PowerShellPs1PolicyStatus
 } from "../types/config";
 
@@ -47,36 +48,52 @@ export function detectClis() {
   return invokeTauri<CliStatusMap>("detect_clis");
 }
 
-export function ensureNilesoftInstalled() {
-  return invokeTauri<InstallStatus>("ensure_nilesoft_installed");
-}
-
-export function oneClickInstallRepair(config: AppConfig) {
-  return invokeTauri<ActionResult>("one_click_install_repair", { config });
-}
-
-export function requestElevationAndRegister() {
-  return invokeTauri<ActionResult>("request_elevation_and_register");
-}
-
-export function attemptUnregisterNilesoft() {
-  return invokeTauri<ActionResult>("attempt_unregister_nilesoft");
-}
-
 export function cleanupAppData(confirmToken?: string) {
   return invokeTauri<ActionResult>("cleanup_app_data", { confirmToken });
-}
-
-export function oneClickUnregisterCleanup(confirmToken?: string) {
-  return invokeTauri<ActionResult>("one_click_unregister_cleanup", { confirmToken });
 }
 
 export function applyConfig(config: AppConfig) {
   return invokeTauri<ActionResult>("apply_config", { config });
 }
 
-export function activateNow() {
-  return invokeTauri<ActionResult>("activate_now");
+export function previewContextMenuPlan(config: AppConfig) {
+  return invokeTauri<import("../types/config").RegistryWritePlan>("preview_context_menu_plan", { config });
+}
+
+export function listExeclinkContextMenus() {
+  return invokeTauri<InstalledMenuGroup[]>("list_execlink_context_menus");
+}
+
+export function removeAllExeclinkContextMenus() {
+  return invokeTauri<ActionResult>("remove_all_execlink_context_menus");
+}
+
+export function notifyShellChanged() {
+  return invokeTauri<ActionResult>("notify_shell_changed");
+}
+
+export function restartExplorerFallback() {
+  return invokeTauri<ActionResult>("restart_explorer_fallback");
+}
+
+export function detectLegacyMenuArtifacts() {
+  return invokeTauri<LegacyArtifact[]>("detect_legacy_menu_artifacts");
+}
+
+export function migrateLegacyHkcuMenuToV2() {
+  return invokeTauri<ActionResult>("migrate_legacy_hkcu_menu_to_v2");
+}
+
+export function cleanupNilesoftArtifacts() {
+  return invokeTauri<ActionResult>("cleanup_nilesoft_artifacts");
+}
+
+export function enableWin11ClassicContextMenu() {
+  return invokeTauri<ActionResult>("enable_win11_classic_context_menu");
+}
+
+export function disableWin11ClassicContextMenu() {
+  return invokeTauri<ActionResult>("disable_win11_classic_context_menu");
 }
 
 export function getDiagnostics() {
@@ -177,20 +194,4 @@ export function terminalResize(cols: number, rows: number) {
 
 export function terminalCloseSession() {
   return invokeTauri<ActionResult>("terminal_close_session");
-}
-
-export function repairContextMenuHkcu(config: AppConfig) {
-  return invokeTauri<ActionResult>("repair_context_menu_hkcu", { config });
-}
-
-export function removeContextMenuHkcu(menuTitle?: string) {
-  return invokeTauri<ActionResult>("remove_context_menu_hkcu", { menuTitle });
-}
-
-export function listContextMenuGroupsHkcu() {
-  return invokeTauri<HkcuMenuGroup[]>("list_context_menu_groups_hkcu");
-}
-
-export function refreshExplorer() {
-  return invokeTauri<ActionResult>("refresh_explorer");
 }

@@ -1,16 +1,21 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod command_launcher;
 mod commands;
+mod context_menu_builder;
+mod context_menu_icons;
+mod context_menu_model;
+mod context_menu_registry;
+mod context_menu_service;
 mod detect;
 mod embedded_terminal;
-mod explorer;
 mod logging;
-mod nilesoft;
-mod nilesoft_install;
 mod process_util;
+mod shell_notify;
 mod state;
 mod terminal;
 mod tray;
+mod win11_classic_menu;
 
 fn main() {
     tauri::Builder::default()
@@ -46,18 +51,18 @@ fn main() {
             commands::terminal_run_script,
             commands::terminal_resize,
             commands::terminal_close_session,
-            commands::ensure_nilesoft_installed,
-            commands::one_click_install_repair,
-            commands::request_elevation_and_register,
-            commands::attempt_unregister_nilesoft,
             commands::cleanup_app_data,
-            commands::one_click_unregister_cleanup,
-            commands::repair_context_menu_hkcu,
-            commands::remove_context_menu_hkcu,
-            commands::list_context_menu_groups_hkcu,
-            commands::refresh_explorer,
+            commands::preview_context_menu_plan,
+            commands::list_execlink_context_menus,
+            commands::remove_all_execlink_context_menus,
+            commands::notify_shell_changed,
+            commands::restart_explorer_fallback,
+            commands::detect_legacy_menu_artifacts,
+            commands::migrate_legacy_hkcu_menu_to_v2,
+            commands::cleanup_nilesoft_artifacts,
+            commands::enable_win11_classic_context_menu,
+            commands::disable_win11_classic_context_menu,
             commands::apply_config,
-            commands::activate_now,
             commands::get_diagnostics,
             commands::get_cli_install_hints,
             commands::run_startup_check,

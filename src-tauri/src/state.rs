@@ -7,7 +7,7 @@ use std::{
 };
 
 pub type AppResult<T> = Result<T, String>;
-pub const CONFIG_VERSION: u32 = 9;
+pub const CONFIG_VERSION: u32 = 10;
 const APP_DIR_NAME: &str = "execlink";
 const LEGACY_APP_DIR_NAME: &str = "AI-CLI-Switch";
 const KNOWN_CLI_KEYS: [&str; 7] = [
@@ -157,15 +157,12 @@ pub struct AppConfig {
     pub menu_title: String,
     pub cli_order: Vec<String>,
     pub display_names: CliDisplayNames,
-    pub show_nilesoft_default_menus: bool,
     pub terminal_mode: TerminalMode,
     pub terminal_theme_id: String,
     pub terminal_theme_mode: TerminalThemeMode,
     pub ps_prompt_style: PsPromptStyle,
     pub uv_install_source_mode: UvInstallSourceMode,
     pub install_timeouts: InstallTimeoutConfig,
-    pub advanced_menu_mode: bool,
-    pub menu_theme_enabled: bool,
     // Backward-compatibility field kept for legacy config migration.
     pub use_windows_terminal: bool,
     pub no_exit: bool,
@@ -251,15 +248,12 @@ impl Default for AppConfig {
             menu_title: "AI CLIs".to_string(),
             cli_order: default_cli_order(),
             display_names: CliDisplayNames::default(),
-            show_nilesoft_default_menus: false,
             terminal_mode: TerminalMode::Wt,
             terminal_theme_id: "vscode-dark-plus".to_string(),
             terminal_theme_mode: TerminalThemeMode::Auto,
             ps_prompt_style: PsPromptStyle::Basic,
             uv_install_source_mode: UvInstallSourceMode::Auto,
             install_timeouts: InstallTimeoutConfig::default(),
-            advanced_menu_mode: false,
-            menu_theme_enabled: false,
             use_windows_terminal: true,
             no_exit: true,
             toggles: CliToggles::default(),
@@ -278,60 +272,6 @@ pub struct CliStatusMap {
     pub qwencode: bool,
     pub opencode: bool,
     pub pwsh: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct InstallStatus {
-    pub installed: bool,
-    pub registered: bool,
-    pub needs_elevation: bool,
-    pub message: String,
-    pub shell_exe: Option<String>,
-    pub config_root: Option<String>,
-}
-
-impl InstallStatus {
-    pub fn not_installed(message: impl Into<String>) -> Self {
-        Self {
-            installed: false,
-            registered: false,
-            needs_elevation: false,
-            message: message.into(),
-            shell_exe: None,
-            config_root: None,
-        }
-    }
-
-    pub fn installed_unregistered(
-        message: impl Into<String>,
-        shell_exe: Option<String>,
-        config_root: Option<String>,
-        needs_elevation: bool,
-    ) -> Self {
-        Self {
-            installed: true,
-            registered: false,
-            needs_elevation,
-            message: message.into(),
-            shell_exe,
-            config_root,
-        }
-    }
-
-    pub fn ready(
-        message: impl Into<String>,
-        shell_exe: Option<String>,
-        config_root: Option<String>,
-    ) -> Self {
-        Self {
-            installed: true,
-            registered: true,
-            needs_elevation: false,
-            message: message.into(),
-            shell_exe,
-            config_root,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -379,7 +319,8 @@ impl ActionResult {
 pub struct InitialState {
     pub config: AppConfig,
     pub cli_status: CliStatusMap,
-    pub install_status: InstallStatus,
+    pub context_menu_status: ContextMenuStatus,
+    pub win11_classic_menu_status: Win11ClassicMenuStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -388,11 +329,6 @@ pub struct DiagnosticsInfo {
     pub app_version: String,
     pub build_channel: String,
     pub app_root: Option<String>,
-    pub install_root: Option<String>,
-    pub shell_exe: Option<String>,
-    pub effective_config_root: Option<String>,
-    pub resource_zip_path: Option<String>,
-    pub install_status: InstallStatus,
     pub config_version: u32,
     pub runtime: RuntimeState,
     pub terminal_mode_requested: String,
@@ -409,6 +345,10 @@ pub struct DiagnosticsInfo {
     pub terminal_powershell_available: bool,
     pub log_path: Option<String>,
     pub log_tail: Vec<String>,
+    pub context_menu_status: ContextMenuStatus,
+    pub win11_classic_menu_status: Win11ClassicMenuStatus,
+    pub installed_menu_groups: Vec<InstalledMenuGroup>,
+    pub legacy_artifacts: Vec<LegacyArtifact>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -616,22 +556,12 @@ fn normalize_config(mut config: AppConfig) -> AppConfig {
         config.terminal_theme_mode = TerminalThemeMode::Auto;
         config.ps_prompt_style = PsPromptStyle::Basic;
     }
-    if config.version < 8 {
-        config.advanced_menu_mode = false;
-        config.menu_theme_enabled = false;
-    }
     normalize_text_field(&mut config.menu_title, "AI CLIs");
     normalize_text_field(&mut config.terminal_theme_id, "vscode-dark-plus");
     normalize_cli_order(&mut config.cli_order);
     normalize_display_names(&mut config.display_names);
     normalize_install_timeouts(&mut config.install_timeouts);
-    if config.version < 4 {
-        config.show_nilesoft_default_menus = false;
-    }
-    config.show_nilesoft_default_menus = false;
     config.no_exit = true;
-    config.advanced_menu_mode = false;
-    config.menu_theme_enabled = false;
     config.use_windows_terminal = matches!(config.terminal_mode, TerminalMode::Wt);
     if config.version == 0 || config.version < CONFIG_VERSION {
         config.version = CONFIG_VERSION;
@@ -713,7 +643,6 @@ mod tests {
         cfg.display_names.kimi_web = "".to_string();
         cfg.display_names.qwencode = "".to_string();
         cfg.display_names.opencode = "".to_string();
-        cfg.show_nilesoft_default_menus = true;
         cfg.toggles.kimi_web = false;
         cfg.toggles.qwencode = false;
         cfg.toggles.opencode = false;
@@ -729,9 +658,6 @@ mod tests {
         assert_eq!(normalized.terminal_theme_id, "vscode-dark-plus");
         assert_eq!(normalized.terminal_theme_mode, TerminalThemeMode::Auto);
         assert_eq!(normalized.ps_prompt_style, PsPromptStyle::Basic);
-        assert!(!normalized.advanced_menu_mode);
-        assert!(!normalized.menu_theme_enabled);
-        assert!(!normalized.show_nilesoft_default_menus);
         assert!(normalized.toggles.kimi_web);
         assert!(normalized.toggles.qwencode);
         assert!(normalized.toggles.opencode);
@@ -739,8 +665,6 @@ mod tests {
         assert_eq!(normalized.terminal_theme_id, "vscode-dark-plus");
         assert_eq!(normalized.terminal_theme_mode, TerminalThemeMode::Auto);
         assert_eq!(normalized.ps_prompt_style, PsPromptStyle::Basic);
-        assert!(!normalized.advanced_menu_mode);
-        assert!(!normalized.menu_theme_enabled);
         assert_eq!(
             normalized.cli_order,
             vec![
@@ -768,7 +692,6 @@ mod tests {
             "gemini".to_string(),
             "gemini".to_string(),
         ];
-        cfg.show_nilesoft_default_menus = true;
 
         let normalized = normalize_config(cfg);
         assert_eq!(normalized.version, CONFIG_VERSION);
@@ -787,7 +710,6 @@ mod tests {
                 "kimi_web".to_string()
             ]
         );
-        assert!(!normalized.show_nilesoft_default_menus);
     }
 
     #[test]
@@ -822,13 +744,10 @@ mod tests {
         assert_eq!(normalized.terminal_theme_id, "vscode-dark-plus");
         assert_eq!(normalized.terminal_theme_mode, TerminalThemeMode::Auto);
         assert_eq!(normalized.ps_prompt_style, PsPromptStyle::Basic);
-        assert!(!normalized.advanced_menu_mode);
-        assert!(!normalized.menu_theme_enabled);
         assert!(normalized.toggles.kimi_web);
         assert!(normalized.toggles.qwencode);
         assert!(normalized.toggles.opencode);
         assert_eq!(normalized.cli_order, default_cli_order());
-        assert!(!normalized.show_nilesoft_default_menus);
     }
 
     #[test]
@@ -871,4 +790,67 @@ mod tests {
             3 * 60 * 1000
         );
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextMenuStatus {
+    pub applied: bool,
+    pub enabled_roots: Vec<String>,
+    pub has_legacy_artifacts: bool,
+    pub requires_manual_refresh: bool,
+    pub current_group_id: Option<String>,
+    pub current_group_title: Option<String>,
+    pub message: String,
+}
+
+impl ContextMenuStatus {
+    pub fn empty(message: impl Into<String>) -> Self {
+        Self {
+            applied: false,
+            enabled_roots: Vec::new(),
+            has_legacy_artifacts: false,
+            requires_manual_refresh: false,
+            current_group_id: None,
+            current_group_title: None,
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Win11ClassicMenuStatus {
+    pub enabled: bool,
+    pub registry_path: String,
+    pub restart_recommended: bool,
+    pub message: String,
+}
+
+impl Win11ClassicMenuStatus {
+    pub fn empty(message: impl Into<String>) -> Self {
+        Self {
+            enabled: false,
+            registry_path:
+                r"HKCU\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32"
+                    .to_string(),
+            restart_recommended: true,
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstalledMenuGroup {
+    pub group_id: String,
+    pub title: String,
+    pub roots: Vec<String>,
+    pub item_ids: Vec<String>,
+    pub schema_version: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LegacyArtifact {
+    pub path: String,
+    pub title: String,
+    pub root: String,
+    pub reason: String,
 }

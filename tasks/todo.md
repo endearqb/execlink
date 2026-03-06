@@ -746,3 +746,295 @@
 ### Review
 - `vis=key.shift()` on taskbar menu alone is not enough to guarantee native fallback for normal taskbar right-click.
 - A shell-level exclusion gate is required to avoid empty-intercept behavior.
+# 2026-03-06 ExecLink 去 Nilesoft Rust 化重构
+
+## 计划清单
+- [x] 将本次实施计划固化到任务清单并按阶段推进。
+- [x] 新增 v2 右键菜单后端模块：模型、命令编译、builder、registry writer、shell notify、service。
+- [x] 将 Tauri 命令与状态模型切换到 v2 菜单链路，移除 Nilesoft 运行时依赖入口。
+- [x] 更新前端类型、API、主页面与托盘交互，改为新的右键菜单状态与操作。
+- [x] 清理 Nilesoft 打包资源/安装动作/文案引用。
+- [x] 补充测试并完成 `cargo test`、`cargo check`、`npm run build` 验证。
+- [x] 回填执行记录与回顾。
+
+## 执行记录
+- 新增 Rust 模块：
+- `src-tauri/src/context_menu_model.rs`
+- `src-tauri/src/command_launcher.rs`
+- `src-tauri/src/context_menu_builder.rs`
+- `src-tauri/src/context_menu_registry.rs`
+- `src-tauri/src/shell_notify.rs`
+- `src-tauri/src/context_menu_service.rs`
+- 以 `context-menu-registry-schema-v2.md` 为准落地 v2 schema：
+- 单组 `ExecLink.main`
+- 四个固定 roots：`Directory\Background` / `Directory` / `DesktopBackground` / `Drive`
+- marker：`Execlink.Owner=endearqb.execlink`、`Execlink.SchemaVersion=2`
+- 子项 key：`{order:03}_{item_id}`
+- 命令生成改为 Rust 内部编译：
+- `auto` 优先级：`wt > pwsh > powershell`
+- `%V` 作为统一工作目录占位符
+- `apply_config` 改为：
+- 保存配置
+- 生成 `ContextMenuPlan` / `RegistryWritePlan`
+- 直写 HKCU 注册表
+- 校验写入结果
+- 调用 `SHChangeNotify`
+- 新增 Tauri 命令：
+- `preview_context_menu_plan`
+- `list_execlink_context_menus`
+- `remove_all_execlink_context_menus`
+- `notify_shell_changed`
+- `restart_explorer_fallback`
+- `detect_legacy_menu_artifacts`
+- `migrate_legacy_hkcu_menu_to_v2`
+- `cleanup_nilesoft_artifacts`
+- `get_initial_state` 改为返回 `context_menu_status`
+- `get_diagnostics` 改为输出 v2 菜单状态、已安装分组、legacy 残留
+- 前端切换：
+- `src/types/config.ts` 新增 `ContextMenuStatus`、`InstalledMenuGroup`、`LegacyArtifact`、`RegistryWritePlan`
+- `src/api/tauri.ts` 接入新菜单命令
+- `src/pages/Home.tsx` 的高级维护区改为：
+- 右键菜单状态
+- Explorer 刷新 / 兜底刷新
+- 扫描已安装分组与 legacy 残留
+- 迁移 legacy 菜单
+- 删除当前菜单 / 清理旧残留
+- `PrimaryActionsBar` 与 `UsageGuideDialog` 改为经典菜单 / Win11 “显示更多选项”表述
+- 打包层清理：
+- 删除 `src-tauri/resources/nilesoft.zip`
+- `src-tauri/tauri.conf.json` 移除 Nilesoft 资源声明
+- `src-tauri/wix/main.wxs` 移除 Nilesoft 安装/反注册/删除自定义动作与卸载选项
+- 文档更新：
+- `README.md`
+- `docs/release_checklist.md`
+- 验证结果：
+- `cargo check --manifest-path src-tauri/Cargo.toml` 通过
+- `cargo test --manifest-path src-tauri/Cargo.toml` 通过（68/68）
+- `npm run build` 通过
+- `npm run tauri -- build` 通过
+- 产物：
+- `src-tauri/target/release/bundle/msi/ExecLink_0.2.9_x64_zh-CN.msi`
+- `src-tauri/target/release/bundle/nsis/ExecLink_0.2.9_x64-setup.exe`
+
+## 回顾
+- 这次最关键的收益是把“菜单写入”和“Shell 生效”从 Nilesoft / PowerShell 链路中独立出来，后续再做多分组、细粒度 root 开关会轻很多。
+- 当前仓库里仍保留了旧 Nilesoft 源码与部分兼容 wrapper，但它们已不再暴露为主命令，也不再参与打包资源与安装动作；后续可以继续做第二轮代码裁剪，消除剩余 warning。
+
+# 2026-03-06 Legacy 物理删除收尾 + v2 级联菜单缺项修复
+
+## 计划清单
+- [x] 修复 v2 右键菜单父键级联兼容问题，确保组内 CLI 正常显示。
+- [x] 删除后端 legacy Nilesoft / explorer / HKCU PowerShell 脚本链路。
+- [x] 收口状态模型与前端 API/Home 页面到纯 v2 菜单语义。
+- [x] 更新 schema 文档与经验记录。
+- [x] 运行 `cargo test`、`cargo check`、`npm run build`、`npm run tauri -- build` 验证。
+
+## 执行记录
+- `context_menu_builder.rs` 的父键写入新增 `SubCommands=""`，并补单测 `should_write_subcommands_marker_on_each_parent_group_key`，修复“只显示分组名、不显示组内 CLI”的级联兼容问题。
+- `tasks/context-menu-registry-schema-v2.md` 与 `docs/context-menu-registry-schema-v2.md` 已同步更新：v2 父键必须写 `SubCommands=""`，刷新链路以 `SHChangeNotify -> Explorer fallback` 为准。
+- `commands.rs` 已删除旧 Nilesoft/PowerShell HKCU 链路：
+- 删除命令与 wrapper：`ensure_nilesoft_installed`、`one_click_install_repair`、`request_elevation_and_register`、`attempt_unregister_nilesoft`、`one_click_unregister_cleanup`、`repair_context_menu_hkcu`、`remove_context_menu_hkcu`、`list_context_menu_groups_hkcu`、`refresh_explorer`、`activate_now`
+- 删除 HKCU PowerShell 辅助：`HkcuMenuGroup`、`HkcuMenuGroupRow`、`build_hkcu_menu_script`、`build_remove_hkcu_menu_script`、`build_list_hkcu_menu_groups_script`、`parse_hkcu_menu_groups`
+- `main.rs` 已移除 `mod explorer`、`mod nilesoft`、`mod nilesoft_install`；源码文件 `src-tauri/src/explorer.rs`、`src-tauri/src/nilesoft.rs`、`src-tauri/src/nilesoft_install.rs` 已物理删除。
+- `Cargo.toml` 已移除仅供旧链路使用的 `walkdir`、`zip` 依赖。
+- `state.rs` / `terminal.rs` / `src/types/config.ts` 已删除失效的 Nilesoft 配置字段：
+- `show_nilesoft_default_menus`
+- `advanced_menu_mode`
+- `menu_theme_enabled`
+- `InstallStatus` 已移除，前后端统一使用 `ContextMenuStatus`。
+- `src/api/tauri.ts` 已删除 legacy API 别名；`Home.tsx` 已切到纯 v2 语义，直接调用 `applyConfig`、`notifyShellChanged`、`removeAllExeclinkContextMenus`、`cleanupNilesoftArtifacts`、`restartExplorerFallback`。
+- 编译与验证结果：
+- `cargo check --manifest-path src-tauri/Cargo.toml` 通过，且无旧模块遗留 warning
+- `cargo test --manifest-path src-tauri/Cargo.toml` 通过（34/34）
+- `npm run build` 通过
+- `npm run tauri -- build` 通过
+- 产物：
+- `src-tauri/target/release/bundle/msi/ExecLink_0.2.9_x64_zh-CN.msi`
+- `src-tauri/target/release/bundle/nsis/ExecLink_0.2.9_x64-setup.exe`
+- `rg` 检查 `mod nilesoft`、`mod nilesoft_install`、`ensure_nilesoft_installed`、`one_click_install_repair`、`build_hkcu_menu_script` 等旧符号时返回空结果，说明源码级 legacy 清理已完成。
+
+## 回顾
+- 这次用户反馈直接暴露了一个重要平台事实：Windows 经典级联父键即使已经创建了 `shell` 子项，仍可能因为缺少 `SubCommands=""` 而不展开子菜单。
+- 仅仅“逻辑上切换到 v2”还不够，必须把旧模块从编译链和 API 面彻底移除，否则后续排障会一直被过期概念和 wrapper 干扰。
+
+# 2026-03-06 官方 CLI 图标 + Win11 菜单边界说明
+
+## 计划清单
+- [x] 为右键菜单 7 个 CLI 子项接入各自官方品牌图标资源。
+- [x] 新增图标写盘模块并接入 v2 菜单 apply / migrate 链路。
+- [x] 更新 Win11 经典菜单说明文案，明确仍需“显示更多选项”。
+- [x] 补充测试并完成 `cargo test`、`cargo check`、`npm run build` 验证。
+
+## 执行记录
+- 新增 `src-tauri/resources/context-menu-icons/`，内置 `claude.ico`、`codex.ico`、`gemini.ico`、`kimi.ico`、`qwen-code.ico`、`opencode.ico` 六组品牌图标资源；`kimi_web` 与 `kimi` 共用同一套 Kimi 图标。
+- 新增 `src-tauri/src/context_menu_icons.rs` 作为统一图标入口：
+- `item_icon_target_path(cli_id)` 负责计算 `%LOCALAPPDATA%\\execlink\\context-menu-icons\\*.ico`
+- `ensure_context_menu_icon_files()` 负责把内置图标写入本地 app data，并保持幂等
+- `group_icon_value()` 继续返回 `execlink.exe,0`，保证父分组菜单仍显示 ExecLink 图标
+- 用户二次反馈后确认了一个实际兼容性问题：`claude.ico` 与 `qwen-code.ico` 最初只是扩展名为 `.ico` 的 `JPEG/PNG` 文件，Explorer 不会稳定显示这类伪 ICO 资源。
+- 现已将 `claude.ico` 与 `qwen-code.ico` 重新封装为标准多尺寸 ICO 容器，并补充单测强制检查所有内置品牌图标都必须以 `00 00 01 00` 的 ICO 文件头开头。
+- `context_menu_model.rs` 已切换为“父分组用 ExecLink 图标、子 CLI 用品牌图标”的生成规则，不再让子项复用 `execlink.exe` 图标。
+- `context_menu_service.rs` 已在 `apply_context_menu` 与 `migrate_legacy_to_v2` 前调用 `ensure_context_menu_icon_files()`，确保注册表写入前图标文件已经落盘；`preview_registry_write_plan` 维持纯预览，不产生副作用。
+- `commands.rs` 新增启动阶段的 best-effort 图标刷新：打开应用或执行启动检查时会先尝试把本地 `%LOCALAPPDATA%\\execlink\\context-menu-icons\\` 覆盖到最新资源，降低“升级后仍沿用旧坏图标文件”的概率。
+- `context_menu_builder.rs` 维持现有 `Icon` 注册表写法，但测试已明确断言：
+- 父级 `Icon` 仍为 ExecLink 可执行文件图标
+- 子级 `Icon` 指向 `%LOCALAPPDATA%\\execlink\\context-menu-icons\\*.ico`
+- 前端和文案更新：
+- `src/pages/Home.tsx`
+- `src/components/PrimaryActionsBar.tsx`
+- `src/components/UsageGuideDialog.tsx`
+- `README.md`
+- 以上入口均已明确说明：当前版本采用经典右键菜单方案，Windows 11 需在“显示更多选项”中查看，不进入 Win11 顶层新右键菜单。
+- 验证结果：
+- `cargo test --manifest-path src-tauri/Cargo.toml` 通过（41/41，含新增 ICO 资源校验测试）
+- `cargo check --manifest-path src-tauri/Cargo.toml` 通过
+- `npm run build` 通过
+- `npm run tauri -- build` 通过
+
+## 回顾
+- 这轮实现把“菜单品牌识别”从 `execlink.exe` 图标解绑出来了，后续即使继续调整命令生成或菜单 schema，CLI 子项图标也能保持稳定一致。
+- 用户对 Win11 体验的反馈再次说明，平台边界不能只藏在文档里；必须在主页、帮助和 README 同步讲清楚，否则很容易被误判成右键菜单失效。
+- 下载到本地的 favicon 资源不能只看文件扩展名；如果不校验文件头，`jpg/png` 伪装成 `.ico` 也会被打进安装包，最终只会在 Windows Explorer 里暴露成“部分图标不显示”。
+
+# 2026-03-06 Win11 经典右键菜单显式开关
+
+## 计划清单
+- [x] 新增后端 Win11 经典右键菜单状态检测与启用/关闭命令。
+- [x] 将状态接入 `InitialState` / 诊断信息，并在前端展示当前系统级开关状态。
+- [x] 在菜单页增加“启用经典右键菜单 / 恢复 Win11 原生菜单”显式入口与风险提示。
+- [x] 运行 `cargo test`、`cargo check`、`npm run build`、`npm run tauri -- build` 验证，并记录回顾。
+
+## 执行记录
+- 新增后端模块 `src-tauri/src/win11_classic_menu.rs`，封装当前用户级 Win11 经典右键菜单覆盖的注册表路径：
+- `HKCU\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32`
+- 提供 `inspect_status()`、`enable()`、`disable()` 三个入口；启用时写入空默认值，关闭时删除整个 CLSID 树，并在两侧都调用 `SHChangeNotify`。
+- `state.rs` 新增 `Win11ClassicMenuStatus`，并接入：
+- `InitialState`
+- `DiagnosticsInfo`
+- 前后端类型已同步：
+- `src/types/config.ts` 新增 `Win11ClassicMenuStatus`
+- `src/api/tauri.ts` 新增 `enableWin11ClassicContextMenu()` / `disableWin11ClassicContextMenu()`
+- `commands.rs` 新增两个 Tauri 命令：
+- `enable_win11_classic_context_menu`
+- `disable_win11_classic_context_menu`
+- `get_initial_state`、`get_diagnostics`、`run_startup_check` 已同时纳入该系统级状态，首页刷新后可直接看到当前是否处于经典右键菜单覆盖模式。
+- `Home.tsx` 已新增独立的“Windows 11 经典菜单开关”卡片：
+- 展示当前状态 chip（已启用经典菜单 / 原生顶层菜单）
+- 提供“启用经典右键菜单 / 恢复 Win11 原生菜单”两个显式按钮
+- 所有切换动作都走确认弹窗，并明确说明这是“当前用户级系统开关，会影响整个资源管理器右键菜单，而不只是 ExecLink”
+- 卡片中保留注册表路径和“如未立即生效请用 Explorer 兜底刷新或重新登录”的提示，避免用户把平台缓存误判成开关失效。
+- 验证结果：
+- `cargo test --manifest-path src-tauri/Cargo.toml` 通过（44/44）
+- `cargo check --manifest-path src-tauri/Cargo.toml` 通过
+- `npm run build` 通过
+- `npm run tauri -- build` 通过
+- 产物：
+- `src-tauri/target/release/bundle/msi/ExecLink_0.2.9_x64_zh-CN.msi`
+- `src-tauri/target/release/bundle/nsis/ExecLink_0.2.9_x64-setup.exe`
+
+## 回顾
+- 这类“让 Win11 右键直接展开经典菜单”的诉求，本质上是系统级 shell 行为切换，不应和 ExecLink 自己的菜单 schema / apply_config 混在一起；做成独立显式开关更安全，也更符合用户预期。
+- 状态展示必须同时说明影响范围和生效条件；否则用户很容易把 Explorer 缓存、重新登录需求或系统版本差异误判成应用逻辑 bug。
+
+# 2026-03-06 菜单页高级选项收拢
+
+## 计划清单
+- [x] 将“终端运行器”从菜单页主区移动到“高级维护”折叠区。
+- [x] 将“uv 安装源策略”和“安装超时”一起收拢到“高级维护”折叠区。
+- [x] 保持现有状态与保存逻辑不变，仅调整信息架构与文案提示。
+- [x] 运行前端构建验证并记录结果。
+
+## 执行记录
+- `src/pages/Home.tsx` 的菜单页主区现在只保留“启用右键菜单”主开关，并新增一条提示文案，明确告知“终端运行器 / uv 安装策略 / 安装超时”已收拢到下方“高级维护”。
+- 原先位于菜单页主区顶部的三块设置已整体移入“高级维护”折叠区，作为新的“运行与安装策略”分组：
+- `终端运行器`
+- `uv 安装源策略`
+- `安装超时（秒）`
+- 本轮未改动这些设置的状态字段、默认值、保存逻辑或应用逻辑；仍然沿用原来的 `config.terminal_mode`、`config.uv_install_source_mode`、`config.install_timeouts`。
+- 这样主区保留高频菜单开关，较少使用但更偏维护/调优的运行参数统一进入折叠区，菜单页层级更清晰。
+- 验证结果：
+- `npm run build` 通过
+
+## 回顾
+- 这类“信息架构收拢”调整优先只动展示层，不碰状态与保存逻辑，能明显降低 UI 重排带来的回归风险。
+
+# 2026-03-06 历史版本更新记录整理
+
+## 计划清单
+- [x] 梳理仓库现有 `updatenote/`、git tag 与任务记录中的版本信息。
+- [x] 新增一份按版本号组织的历史更新记录，和现有按日期记录并存。
+- [x] 明确标注正式 tag/release 与仅工作区构建版本，避免版本状态混淆。
+- [x] 回填执行记录与回顾。
+
+## 执行记录
+- 已核对三类历史来源：
+- `updatenote/2026-02-17.md` ~ `updatenote/2026-02-26.md`
+- git tag：`v0.1.0`、`v0.1.1`、`v0.2.2`、`v0.2.3`、`v0.2.4`、`v0.2.5`、`v0.2.7`
+- `tasks/todo.md` 中关于 `0.2.6`、`0.2.8`、`0.2.9` 的版本升级、构建与发布记录
+- 新增 `updatenote/CHANGELOG.md`，按版本号整理了从 `v0.1.0` 到 `v0.2.9` 的历史更新摘要。
+- 在 changelog 中已显式区分：
+- 正式 tag / GitHub Release 版本
+- 仅工作区构建、当前仓库未见正式 tag 的版本（如 `v0.2.6`、`v0.2.9`）
+- 这样后续发布说明可以直接引用 `updatenote/CHANGELOG.md`，而详细实施过程仍保留在原有按日期记录中。
+
+## 回顾
+- 按日期记录更适合工程实施追踪，按版本号记录更适合发布说明与用户阅读；两者并存比强行二选一更稳妥。
+- 对没有正式 tag 的版本必须明确标注状态，否则很容易把“本地构建版”误读成已经公开发布的正式版本。
+
+# 2026-03-06 推送 Git 与发布 v0.2.9
+
+## 计划清单
+- [ ] 复核当前工作区、远端状态与 `v0.2.9` tag / release 状态。
+- [ ] 提交当前工作区改动并推送到 `origin/main`。
+- [ ] 创建并推送 `v0.2.9` tag。
+- [ ] 发布 GitHub Release 并附带 MSI / NSIS 安装包。
+- [ ] 回填执行记录与回顾。
+
+## 执行记录
+
+## 回顾
+
+# 2026-03-06 右键菜单命令转义 + CLI 可见性链路修复
+
+## 计划清单
+- [x] 修复 `Set-Location -LiteralPath` 命令拼接，避免 `%V` 替换后被 PowerShell 解析为空字符串。
+- [x] 复核并修正菜单生成链路，确保菜单标题、CLI 自定义名称、CLI 开关与菜单总开关都能正确生效。
+- [x] 在应用右键菜单时按当前已检测到的 CLI 裁剪可见项，避免把未安装 CLI 写入菜单。
+- [x] 补充 Rust 回归测试并完成 `cargo test`、`cargo check`、`npm run build` 验证。
+
+## 执行记录
+- 根因确认：
+- 当前 `pwsh/powershell` 命令模板使用了 `Set-Location -LiteralPath ''%V''; ...`。
+- 当 Explorer 将 `%V` 替换为真实路径后，PowerShell 会把 `''C:\path''` 的前半部分解析为空字符串，触发 `LiteralPath` 不能为空的异常。
+- `src-tauri/src/command_launcher.rs` 已改为“脚本 + 单独工作目录参数”模式：
+- 旧：`-Command "Set-Location -LiteralPath ''%V''; claude"`
+- 新：`-Command "& { Set-Location -LiteralPath $args[0]; claude }" "%V"`
+- 这样工作目录不再嵌入 PowerShell 字符串内部，路径中的空格、中文目录名以及常见特殊字符都更稳。
+- 菜单生成链路已复核：
+- `enable_context_menu=false` 时仍返回空 plan，不写任何菜单
+- `menu_title` 继续作为分组显示名
+- `display_names.*` 继续作为各 CLI 子项显示名
+- `toggles.*` 继续作为用户显式开关
+- 额外新增“应用时按检测结果裁剪”的后端收口：
+- `context_menu_model.rs` 新增 `filter_config_by_detected_clis`
+- `context_menu_service.rs` 在 `preview/apply/migrate` 前统一读取 `detect_all_clis()`，仅把“已启用且当前已检测到”的 CLI 写入右键菜单
+- 用户配置本身不会被清空，仍保留在 `config.json`；只是实际注册表菜单不再展示未安装 CLI
+- `commands.rs` 已补一条更准确的成功文案：当菜单开关开启但当前没有检测到任何已安装 CLI 时，返回“未检测到已安装 CLI，已跳过生成 ExecLink 右键菜单”。
+- 新增/调整 Rust 回归测试：
+- `command_launcher::should_build_pwsh_style_command_with_percent_v`
+- `command_launcher::should_not_wrap_working_dir_placeholder_in_empty_single_quotes`
+- `context_menu_model::should_skip_undetected_clis_when_building_plan_for_detected_statuses`
+- `context_menu_model::should_keep_menu_title_and_custom_cli_name_when_filtering_by_detected_status`
+- `context_menu_model::should_return_empty_plan_when_no_detected_cli_is_enabled`
+- 验证结果：
+- `cargo test --manifest-path src-tauri/Cargo.toml` 通过（48/48）
+- `cargo check --manifest-path src-tauri/Cargo.toml` 通过
+- `npm run build` 通过
+- `npm run tauri -- build` 通过
+- 产物：
+- `src-tauri/target/release/bundle/msi/ExecLink_0.2.9_x64_zh-CN.msi`
+- `src-tauri/target/release/bundle/nsis/ExecLink_0.2.9_x64-setup.exe`
+
+## 回顾
+- 对 Shell 占位符（如 `%V`）不要直接嵌进 PowerShell 字符串字面量；把路径作为独立参数传入脚本，比手工包引号稳得多。
+- 用户配置里的 CLI 开关应保留，但实际写入右键菜单时要再与当前检测结果取交集，否则安装包落地后很容易出现“菜单里有未安装 CLI”的误导。

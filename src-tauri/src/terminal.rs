@@ -26,12 +26,6 @@ pub struct TerminalResolution {
 }
 
 #[derive(Debug, Clone)]
-pub struct MenuLaunchCommand {
-    pub executable: String,
-    pub args: String,
-}
-
-#[derive(Debug, Clone)]
 pub struct SpawnLaunchCommand {
     pub executable: String,
     pub args: Vec<String>,
@@ -46,10 +40,7 @@ pub struct TerminalLaunchPlan {
     fallback_reason: Option<String>,
     effective_executable: String,
     wt_inner_shell: Option<String>,
-    no_exit: bool,
     prompt_style: PsPromptStyle,
-    advanced_menu_mode: bool,
-    menu_theme_enabled: bool,
     theme: &'static ThemeSpec,
 }
 
@@ -220,10 +211,7 @@ pub fn build_launch_plan(config: &AppConfig) -> TerminalLaunchPlan {
         fallback_reason,
         effective_executable,
         wt_inner_shell,
-        no_exit: config.no_exit,
         prompt_style: config.ps_prompt_style,
-        advanced_menu_mode: config.advanced_menu_mode,
-        menu_theme_enabled: config.menu_theme_enabled,
         theme,
     }
 }
@@ -259,35 +247,6 @@ impl TerminalLaunchPlan {
 
     pub fn install_theme_applied(&self) -> bool {
         true
-    }
-
-    pub fn build_menu_command(&self, cli_command: &str) -> MenuLaunchCommand {
-        let script = if self.should_apply_menu_theme() {
-            self.build_menu_advanced_script(cli_command)
-        } else {
-            cli_command.to_string()
-        };
-        match self.effective_mode {
-            TerminalMode::Wt => {
-                let inner_shell = self
-                    .wt_inner_shell
-                    .as_deref()
-                    .unwrap_or(POWERSHELL_EXECUTABLE);
-                let inner_args = build_powershell_args_string(self.no_exit, false, &script);
-                let args = format!(
-                    "new-tab --title \"ExecLink\" --tabColor \"{}\" -d \"@sel.path\" {} {}",
-                    self.theme.tab_color, inner_shell, inner_args
-                );
-                MenuLaunchCommand {
-                    executable: WT_EXECUTABLE.to_string(),
-                    args,
-                }
-            }
-            TerminalMode::Pwsh | TerminalMode::Powershell | TerminalMode::Auto => MenuLaunchCommand {
-                executable: self.effective_executable.clone(),
-                args: build_powershell_args_string(self.no_exit, false, &script),
-            },
-        }
     }
 
     pub fn build_install_command(&self, install_script: &str) -> SpawnLaunchCommand {
@@ -332,12 +291,8 @@ impl TerminalLaunchPlan {
         statements.join("; ")
     }
 
-    fn build_menu_advanced_script(&self, command_statement: &str) -> String {
-        self.build_script(command_statement)
-    }
-
     fn should_apply_menu_theme(&self) -> bool {
-        self.advanced_menu_mode && self.menu_theme_enabled
+        false
     }
 }
 
@@ -450,24 +405,6 @@ fn resolve_theme(config: &AppConfig) -> &'static ThemeSpec {
     }
 }
 
-fn build_powershell_args_string(
-    no_exit: bool,
-    use_execution_policy_bypass: bool,
-    script: &str,
-) -> String {
-    let mut args = Vec::new();
-    if no_exit {
-        args.push("-NoExit".to_string());
-    }
-    if use_execution_policy_bypass {
-        args.push("-ExecutionPolicy".to_string());
-        args.push("Bypass".to_string());
-    }
-    args.push("-Command".to_string());
-    args.push(format!("\"{}\"", script.replace('"', "\\\"")));
-    args.join(" ")
-}
-
 fn build_powershell_args_vec(
     no_exit: bool,
     use_execution_policy_bypass: bool,
@@ -521,15 +458,12 @@ mod tests {
                 "opencode".to_string(),
             ],
             display_names: CliDisplayNames::default(),
-            show_nilesoft_default_menus: false,
             terminal_mode: TerminalMode::Auto,
             terminal_theme_id: DEFAULT_THEME_ID.to_string(),
             terminal_theme_mode: TerminalThemeMode::Auto,
             ps_prompt_style: PsPromptStyle::Basic,
             uv_install_source_mode: Default::default(),
             install_timeouts: Default::default(),
-            advanced_menu_mode: false,
-            menu_theme_enabled: false,
             use_windows_terminal: false,
             no_exit: true,
             toggles: CliToggles::default(),
@@ -584,23 +518,10 @@ mod tests {
     }
 
     #[test]
-    fn should_use_minimal_menu_command_by_default() {
+    fn should_report_minimal_menu_mode_by_default() {
         let config = sample_config();
         let plan = build_launch_plan(&config);
-        let launch = plan.build_menu_command("codex");
         assert_eq!(plan.menu_mode(), "minimal");
-        assert!(!launch.args.contains("RawUI"));
-        assert!(!launch.args.contains("global:prompt"));
     }
 
-    #[test]
-    fn should_apply_menu_theme_in_advanced_mode() {
-        let mut config = sample_config();
-        config.advanced_menu_mode = true;
-        config.menu_theme_enabled = true;
-        let plan = build_launch_plan(&config);
-        let launch = plan.build_menu_command("codex");
-        assert_eq!(plan.menu_mode(), "advanced");
-        assert!(launch.args.contains("RawUI"));
-    }
 }
