@@ -1,4 +1,4 @@
-import { Tabs, Toast } from "@base-ui/react";
+import { Switch, Tabs, Toast } from "@base-ui/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, type Window as TauriWindow } from "@tauri-apps/api/window";
@@ -44,7 +44,6 @@ import { UvInstallSourceDialog } from "../components/UvInstallSourceDialog";
 import { WingetInstallSourceDialog } from "../components/WingetInstallSourceDialog";
 import { QuickSetupWizard } from "../components/QuickSetupWizard";
 import { UsageGuideDialog } from "../components/UsageGuideDialog";
-import { ToggleRow } from "../components/ToggleRow";
 import appLogo from "../assets/excelink_logo.png";
 import {
   CLI_DEFAULT_ORDER,
@@ -118,7 +117,7 @@ type TabKey = "cli" | "menu";
 
 const TABS: Array<{ key: TabKey; title: string }> = [
   { key: "cli", title: "CLI" },
-  { key: "menu", title: "菜单" }
+  { key: "menu", title: "配置" }
 ];
 
 const TERMINAL_MODE_OPTIONS: Array<{ value: AppConfig["terminal_mode"]; label: string }> = [
@@ -150,7 +149,11 @@ const FIELD_CLASS = "grid gap-1.5";
 const FIELD_LABEL_CLASS = "font-semibold text-[var(--ui-text)]";
 const PANEL_CONTENT_CLASS = "grid gap-4";
 const PANEL_TITLE_CLASS = "text-base font-semibold text-[var(--ui-text)]";
-const PANEL_BLOCK_CLASS = `grid gap-3 rounded-[var(--radius-xl)] border border-[#ddd5c9] bg-[var(--ui-base)] p-4 ${INSET_SMALL} max-[420px]:rounded-[var(--radius-lg)]`;
+const HOVER_BUBBLE_CLASS = `pointer-events-none absolute top-[calc(100%+8px)] z-10 translate-y-0.5 whitespace-nowrap rounded-[var(--radius-pill)] bg-[var(--ui-base)] px-2.5 py-[5px] text-[11px] text-[var(--ui-muted)] opacity-0 transition-[opacity,transform] duration-150 ${OUTSET_SMALL}`;
+const COLLAPSIBLE_PANEL_CLASS = `rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${OUTSET_SMALL}`;
+const COLLAPSIBLE_PANEL_SUMMARY_CLASS = "cursor-pointer select-none text-sm font-semibold text-[var(--ui-text)]";
+const MENU_HEADER_SWITCH_ROOT_CLASS = `group relative inline-flex h-7 w-12 cursor-pointer items-center rounded-full border border-[#ddd5c9] bg-[var(--ui-base)] p-1 ${OUTSET_SMALL} transition-[box-shadow,background-color,transform] duration-150 before:pointer-events-none before:absolute before:inset-0 before:rounded-full before:outline-2 before:outline-offset-2 before:outline-transparent data-[checked]:bg-[#d7cec0] data-[disabled]:cursor-not-allowed data-[disabled]:opacity-60 focus-visible:outline-none focus-visible:before:outline-[#8f8072] active:scale-[0.98] active:shadow-[inset_1px_1px_3px_#d5d0c4,inset_-1px_-1px_3px_#ffffff] data-[checked]:active:bg-[#cec2b2]`;
+const MENU_HEADER_SWITCH_THUMB_CLASS = `block size-5 rounded-full bg-[var(--ui-base)] ${OUTSET_SMALL} transition-transform duration-150 group-data-[checked]:translate-x-5`;
 const TAB_CLASS =
   "relative flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-full px-4 py-2.5 text-sm font-semibold leading-none text-[var(--ui-muted)] outline-none transition-[box-shadow,transform,color] duration-150 hover:text-[var(--ui-text)] focus-visible:ring-2 focus-visible:ring-[#8f8072]/40 data-[active]:bg-[var(--ui-base)] data-[active]:text-[var(--ui-text)] data-[active]:shadow-[3px_3px_6px_#d5d0c4,-3px_-3px_6px_#ffffff] active:scale-95 active:shadow-[inset_1px_1px_3px_#d5d0c4,inset_-1px_-1px_3px_#ffffff]";
 const TOAST_ROOT_CLASS = `pointer-events-auto flex items-start justify-between gap-2.5 rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] px-3 py-2.5 opacity-100 ${OUTSET_SMALL} [--toast-stack-offset:calc(var(--toast-offset-y,0px)+(var(--toast-index,0)*3px))] [transform:translate3d(var(--toast-swipe-movement-x,0px),calc(var(--toast-stack-offset)+var(--toast-swipe-movement-y,0px)),0)_scale(calc(1-(var(--toast-index,0)*0.02)))] transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] will-change-[transform,opacity] data-[starting-style]:opacity-0 data-[starting-style]:[transform:translate3d(0,calc(var(--toast-stack-offset)+14px),0)_scale(0.96)] data-[ending-style]:opacity-0 data-[ending-style]:[transform:translate3d(var(--toast-swipe-movement-x,0px),calc(var(--toast-stack-offset)+10px),0)_scale(0.96)] data-[type=success]:bg-[#e8e1d7] data-[type=error]:bg-[#ecddd8]`;
@@ -3781,7 +3784,7 @@ export function HomePage() {
       <section className="app-content-scroll fixed top-[84px] bottom-[52px] left-1 right-1 z-[1100] overflow-x-hidden overflow-y-auto pb-2 max-[420px]:top-[78px] max-[420px]:bottom-[46px] max-[420px]:left-0.5 max-[420px]:right-0.5">
       <div className="w-full px-1">
       <Tabs.Root defaultValue="cli" className="grid gap-4 pt-4 pb-2">
-          <div className="flex items-center justify-between gap-2 max-[420px]:gap-1.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 max-[420px]:gap-1.5">
             <Tabs.List
               className={`inline-flex w-max max-w-full items-center gap-1 rounded-full border border-[#ddd5c9] bg-[var(--ui-base)] p-1.5 ${INSET_SMALL}`}
               aria-label="主分组"
@@ -3793,23 +3796,42 @@ export function HomePage() {
               ))}
               <Tabs.Indicator className="hidden" />
             </Tabs.List>
-            <label className="group/menu-title relative block shrink-0">
-              <input
-                className={`${INPUT_CLASS} w-[220px] py-2 text-xs max-[760px]:w-[168px] max-[420px]:w-[124px] max-[420px]:px-2 max-[420px]:py-1.5`}
-                value={config.menu_title}
-                onChange={(event) =>
-                  setConfig((prev) => ({
-                    ...prev,
-                    menu_title: event.target.value
-                  }))
-                }
-                placeholder="菜单分组"
-                aria-label="右键菜单分组名称"
-              />
-              <span className={`pointer-events-none absolute top-[calc(100%+8px)] right-0 z-10 translate-y-0.5 whitespace-nowrap rounded-[var(--radius-pill)] bg-[var(--ui-base)] px-2.5 py-[5px] text-[11px] text-[var(--ui-muted)] opacity-0 transition-[opacity,transform] duration-150 ${OUTSET_SMALL} group-hover/menu-title:translate-y-0 group-hover/menu-title:opacity-100 group-focus-within/menu-title:translate-y-0 group-focus-within/menu-title:opacity-100`}>
-                右键菜单分组名称
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-2 max-[420px]:w-full">
+              <label className="group/menu-title relative block shrink-0">
+                <input
+                  className={`${INPUT_CLASS} w-[220px] py-2 text-xs max-[760px]:w-[168px] max-[420px]:w-[124px] max-[420px]:px-2 max-[420px]:py-1.5`}
+                  value={config.menu_title}
+                  onChange={(event) =>
+                    setConfig((prev) => ({
+                      ...prev,
+                      menu_title: event.target.value
+                    }))
+                  }
+                  placeholder="菜单分组"
+                  aria-label="右键菜单分组名称"
+                />
+                <span
+                  className={`${HOVER_BUBBLE_CLASS} right-0 group-hover/menu-title:translate-y-0 group-hover/menu-title:opacity-100 group-focus-within/menu-title:translate-y-0 group-focus-within/menu-title:opacity-100`}
+                >
+                  右键菜单分组名称
+                </span>
+              </label>
+              <span className="group/menu-switch relative inline-flex shrink-0">
+                <Switch.Root
+                  className={MENU_HEADER_SWITCH_ROOT_CLASS}
+                  checked={config.enable_context_menu}
+                  onCheckedChange={(checked) => setConfig((prev) => ({ ...prev, enable_context_menu: checked }))}
+                  aria-label={config.enable_context_menu ? "关闭右键菜单" : "启用右键菜单"}
+                >
+                  <Switch.Thumb className={MENU_HEADER_SWITCH_THUMB_CLASS} />
+                </Switch.Root>
+                <span
+                  className={`${HOVER_BUBBLE_CLASS} right-0 group-hover/menu-switch:translate-y-0 group-hover/menu-switch:opacity-100 group-focus-within/menu-switch:translate-y-0 group-focus-within/menu-switch:opacity-100`}
+                >
+                  {config.enable_context_menu ? "关闭" : "启用菜单"}
+                </span>
               </span>
-            </label>
+            </div>
           </div>
 
           <Tabs.Panel value="cli" className="p-0">
@@ -3865,280 +3887,270 @@ export function HomePage() {
 
           <Tabs.Panel value="menu" className="p-0">
             <div className={PANEL_CONTENT_CLASS}>
-              <section className={PANEL_BLOCK_CLASS}>
-                <ToggleRow
-                  title="启用右键菜单"
-                  checked={config.enable_context_menu}
-                  onChange={(checked) => setConfig((prev) => ({ ...prev, enable_context_menu: checked }))}
-                  description="关闭后仅保留配置文件，不显示 AI 菜单项"
-                />
-                <p className="text-xs text-[var(--ui-muted)]">
-                  终端运行器、uv 安装策略和安装超时已收拢到下方“高级维护”，主区只保留最常用的菜单开关。
-                </p>
-              </section>
-              <details className={`rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${OUTSET_SMALL}`}>
-                <summary className="cursor-pointer select-none text-sm font-semibold text-[var(--ui-text)]">
-                  高级维护
-                </summary>
-                <div className="mt-3 grid gap-4">
-                  <section className={PANEL_BLOCK_CLASS}>
-                    <h2 className={PANEL_TITLE_CLASS}>运行与安装策略</h2>
-                    <p className="text-sm text-[var(--ui-muted)]">
-                      调整菜单命令的终端运行方式、uv 安装回退策略，以及安装流程的超时窗口。
-                    </p>
-                    <label className={FIELD_CLASS}>
-                      <span className={FIELD_LABEL_CLASS}>终端运行器</span>
-                      <span className="relative block">
-                        <select
-                          className={SELECT_CLASS}
-                          value={config.terminal_mode}
-                          onChange={(event) =>
-                            setConfig((prev) => ({
-                              ...prev,
-                              terminal_mode: event.target.value as AppConfig["terminal_mode"]
-                            }))
-                          }
-                        >
-                          {TERMINAL_MODE_OPTIONS.map((option) => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                        <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-[var(--ui-light)]">
-                          v
-                        </span>
-                      </span>
-                    </label>
-                    <section className={`grid gap-3 rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${INSET_SMALL}`}>
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="grid gap-0.5">
-                          <span className="text-sm font-semibold text-[var(--ui-text)]">uv 安装源策略</span>
-                          <span className="text-xs text-[var(--ui-muted)]">
-                            当前：{uvInstallSourceModeLabel(config.uv_install_source_mode)}
-                          </span>
-                        </div>
+              <details className={COLLAPSIBLE_PANEL_CLASS}>
+                <summary className={COLLAPSIBLE_PANEL_SUMMARY_CLASS}>右键菜单状态</summary>
+                <div className="mt-3 grid gap-3">
+                  <p className="text-sm text-[var(--ui-muted)]">{contextMenuStatus.message}</p>
+                  <p>
+                    已应用 v2 菜单: <strong>{contextMenuStatus.applied ? "是" : "否"}</strong>
+                  </p>
+                  <p>
+                    当前分组: <strong>{contextMenuStatus.current_group_title ?? contextMenuStatus.current_group_id ?? "未检测到"}</strong>
+                  </p>
+                  <p>
+                    生效作用域: <code>{contextMenuStatus.enabled_roots.length ? contextMenuStatus.enabled_roots.join(" | ") : "未检测到"}</code>
+                  </p>
+                  <p>
+                    Legacy 残留: <strong>{legacyArtifacts.length}</strong>
+                  </p>
+                  <div className="flex flex-wrap gap-2.5">
+                    <button className={RUNTIME_PRIMARY_BUTTON_CLASS} onClick={onEnsureInstall} disabled={working || loading}>
+                      刷新状态
+                    </button>
+                    <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={onRetryElevation} disabled={working || loading}>
+                      通知 Explorer 刷新
+                    </button>
+                    <button
+                      className={RUNTIME_SECONDARY_BUTTON_CLASS}
+                      onClick={() => void runAction(restartExplorerFallback)}
+                      disabled={working || loading}
+                    >
+                      Explorer 兜底刷新
+                    </button>
+                  </div>
+                </div>
+              </details>
+
+              <details className={COLLAPSIBLE_PANEL_CLASS}>
+                <summary className={COLLAPSIBLE_PANEL_SUMMARY_CLASS}>迁移与清理</summary>
+                <div className="mt-3 grid gap-3">
+                  <p className="text-sm text-[var(--ui-muted)]">
+                    用于迁移旧版 PowerShell HKCU 菜单、清理旧 Nilesoft 残留，以及移除当前用户下的 ExecLink 菜单。
+                  </p>
+                  <div className="flex flex-wrap gap-2.5">
+                    <button
+                      className={RUNTIME_PRIMARY_BUTTON_CLASS}
+                      onClick={onMigrateLegacyMenus}
+                      disabled={working || loading || legacyArtifacts.length === 0}
+                    >
+                      迁移 Legacy 菜单
+                    </button>
+                    <button
+                      className={RUNTIME_SECONDARY_BUTTON_CLASS}
+                      onClick={onRemoveMenuFallback}
+                      disabled={working || loading}
+                    >
+                      删除当前菜单
+                    </button>
+                    <button
+                      className={RUNTIME_DANGER_BUTTON_CLASS}
+                      onClick={onOneClickUnregisterCleanup}
+                      disabled={working || loading}
+                    >
+                      清理旧残留
+                    </button>
+                  </div>
+                  <details className={`rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${OUTSET_SMALL}`}>
+                    <summary className={COLLAPSIBLE_PANEL_SUMMARY_CLASS}>菜单扫描结果</summary>
+                    <div className="mt-2 grid gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <button
-                          type="button"
                           className={RUNTIME_SECONDARY_BUTTON_CLASS}
-                          disabled={working || loading}
-                          onClick={() => setUvSourceDialog({ open: true })}
+                          onClick={() => void refreshHkcuGroups(false)}
+                          disabled={working || loading || loadingMenuGroups}
                         >
-                          选择策略
+                          {loadingMenuGroups ? "检测中..." : "扫描菜单状态"}
+                        </button>
+                        <button
+                          className={RUNTIME_DANGER_BUTTON_CLASS}
+                          onClick={onDeleteSelectedHkcuGroups}
+                          disabled={working || loading || selectedMenuGroupKeys.length === 0}
+                        >
+                          删除已选分组
                         </button>
                       </div>
-                      <p className="text-xs text-[var(--ui-muted)]">
-                        自动策略会按 <code>winget -&gt; 官方脚本 -&gt; 清华镜像 -&gt; 阿里镜像</code> 依次回退。
-                      </p>
-                    </section>
-                    <section className={`grid gap-3 rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${INSET_SMALL}`}>
-                      <h3 className="text-sm font-semibold text-[var(--ui-text)]">安装超时（秒）</h3>
-                      <p className="text-xs text-[var(--ui-muted)]">
-                        所有安装流程都会显示倒计时，超时后会自动返回失败详情。范围超出会自动纠正到安全区间。
-                      </p>
-                      <div className="grid gap-2">
-                        {INSTALL_TIMEOUT_FIELDS.map((field) => {
-                          const bounds = INSTALL_TIMEOUT_BOUNDS[field.key];
-                          const valueSeconds = Math.round(effectiveInstallTimeouts[field.key] / 1000);
-                          return (
-                            <label key={field.key} className={FIELD_CLASS}>
-                              <span className="text-xs font-semibold text-[var(--ui-text)]">{field.title}</span>
-                              <span className="text-[11px] text-[var(--ui-muted)]">{field.description}</span>
-                              <input
-                                type="number"
-                                min={Math.round(bounds.min / 1000)}
-                                max={Math.round(bounds.max / 1000)}
-                                step={1}
-                                className={INPUT_CLASS}
-                                value={valueSeconds}
-                                onChange={(event) => {
-                                  const next = Number.parseInt(event.target.value, 10);
-                                  if (!Number.isFinite(next)) {
-                                    return;
-                                  }
-                                  setInstallTimeoutValueMs(field.key, next * 1000);
-                                }}
-                              />
-                              <span className="text-[11px] text-[var(--ui-muted)]">
-                                范围：{Math.round(bounds.min / 1000)} ~ {Math.round(bounds.max / 1000)} 秒
-                              </span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </section>
-                  </section>
-
-                  <section className={PANEL_BLOCK_CLASS}>
-                    <h2 className={PANEL_TITLE_CLASS}>右键菜单状态</h2>
-                    <p className="text-sm text-[var(--ui-muted)]">{contextMenuStatus.message}</p>
-                    <p>
-                      已应用 v2 菜单: <strong>{contextMenuStatus.applied ? "是" : "否"}</strong>
-                    </p>
-                    <p>
-                      当前分组: <strong>{contextMenuStatus.current_group_title ?? contextMenuStatus.current_group_id ?? "未检测到"}</strong>
-                    </p>
-                    <p>
-                      生效作用域: <code>{contextMenuStatus.enabled_roots.length ? contextMenuStatus.enabled_roots.join(" | ") : "未检测到"}</code>
-                    </p>
-                    <p>
-                      Legacy 残留: <strong>{legacyArtifacts.length}</strong>
-                    </p>
-                    <div className="flex flex-wrap gap-2.5">
-                      <button className={RUNTIME_PRIMARY_BUTTON_CLASS} onClick={onEnsureInstall} disabled={working || loading}>
-                        刷新状态
-                      </button>
-                      <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={onRetryElevation} disabled={working || loading}>
-                        通知 Explorer 刷新
-                      </button>
-                      <button className={RUNTIME_SECONDARY_BUTTON_CLASS} onClick={() => void runAction(restartExplorerFallback)} disabled={working || loading}>
-                        Explorer 兜底刷新
-                      </button>
-                    </div>
-                  </section>
-
-                  <section className={PANEL_BLOCK_CLASS}>
-                    <h2 className={PANEL_TITLE_CLASS}>迁移与清理</h2>
-                    <p className="text-sm text-[var(--ui-muted)]">
-                      用于迁移旧版 PowerShell HKCU 菜单、清理旧 Nilesoft 残留，以及移除当前用户下的 ExecLink 菜单。
-                    </p>
-                    <div className="flex flex-wrap gap-2.5">
-                      <button
-                        className={RUNTIME_PRIMARY_BUTTON_CLASS}
-                        onClick={onMigrateLegacyMenus}
-                        disabled={working || loading || legacyArtifacts.length === 0}
-                      >
-                        迁移 Legacy 菜单
-                      </button>
-                      <button
-                        className={RUNTIME_SECONDARY_BUTTON_CLASS}
-                        onClick={onRemoveMenuFallback}
-                        disabled={working || loading}
-                      >
-                        删除当前菜单
-                      </button>
-                      <button
-                        className={RUNTIME_DANGER_BUTTON_CLASS}
-                        onClick={onOneClickUnregisterCleanup}
-                        disabled={working || loading}
-                      >
-                        清理旧残留
-                      </button>
-                    </div>
-                    <details className={`rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${OUTSET_SMALL}`}>
-                      <summary className="cursor-pointer select-none text-sm font-semibold text-[var(--ui-text)]">
-                        菜单扫描结果
-                      </summary>
-                      <div className="mt-2 grid gap-2">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <button
-                            className={RUNTIME_SECONDARY_BUTTON_CLASS}
-                            onClick={() => void refreshHkcuGroups(false)}
-                            disabled={working || loading || loadingMenuGroups}
-                          >
-                            {loadingMenuGroups ? "检测中..." : "扫描菜单状态"}
-                          </button>
-                          <button
-                            className={RUNTIME_DANGER_BUTTON_CLASS}
-                            onClick={onDeleteSelectedHkcuGroups}
-                            disabled={working || loading || selectedMenuGroupKeys.length === 0}
-                          >
-                            删除已选分组
-                          </button>
-                        </div>
-                        {installedMenuGroups.length === 0 && legacyArtifacts.length === 0 ? (
-                          <p className="text-xs text-[var(--ui-muted)]">未检测到已安装分组或 legacy 残留。</p>
-                        ) : (
-                          <div className="grid gap-1.5">
-                            {installedMenuGroups.map((group) => {
-                              const checked = selectedMenuGroupKeys.includes(group.group_id);
-                              return (
-                                <label
-                                  key={group.group_id}
-                                  className={`flex items-start gap-2 rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[var(--ui-base)] px-2.5 py-2 text-xs ${OUTSET_SMALL}`}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={checked}
-                                    onChange={(event) => onToggleHkcuGroupSelection(group.group_id, event.target.checked)}
-                                    disabled={working || loading}
-                                    className="mt-0.5"
-                                  />
-                                  <span className="grid gap-0.5">
-                                    <span className="font-semibold text-[var(--ui-text)]">
-                                      {group.title}{" "}
-                                      <span className="font-mono text-[11px] text-[var(--ui-muted)]">[{group.group_id}]</span>
-                                    </span>
-                                    <span className="text-[11px] text-[var(--ui-muted)]">
-                                      出现位置：{group.roots.join(" | ")}
-                                    </span>
-                                    <span className="text-[11px] text-[var(--ui-muted)]">
-                                      项目：{group.item_ids.join(" | ")}
-                                    </span>
-                                  </span>
-                                </label>
-                              );
-                            })}
-                            {legacyArtifacts.map((artifact) => (
-                              <div
-                                key={artifact.path}
-                                className={`rounded-[var(--radius-md)] border border-[#ddcfc2] bg-[#ecddd8] px-2.5 py-2 text-xs ${OUTSET_SMALL}`}
+                      {installedMenuGroups.length === 0 && legacyArtifacts.length === 0 ? (
+                        <p className="text-xs text-[var(--ui-muted)]">未检测到已安装分组或 legacy 残留。</p>
+                      ) : (
+                        <div className="grid gap-1.5">
+                          {installedMenuGroups.map((group) => {
+                            const checked = selectedMenuGroupKeys.includes(group.group_id);
+                            return (
+                              <label
+                                key={group.group_id}
+                                className={`flex items-start gap-2 rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[var(--ui-base)] px-2.5 py-2 text-xs ${OUTSET_SMALL}`}
                               >
-                                <div className="font-semibold text-[#7d473e]">
-                                  Legacy: {artifact.title} <span className="font-mono text-[11px]">[{artifact.root}]</span>
-                                </div>
-                                <div className="mt-0.5 text-[11px] text-[#8a4f45]">{artifact.path}</div>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(event) => onToggleHkcuGroupSelection(group.group_id, event.target.checked)}
+                                  disabled={working || loading}
+                                  className="mt-0.5"
+                                />
+                                <span className="grid gap-0.5">
+                                  <span className="font-semibold text-[var(--ui-text)]">
+                                    {group.title}{" "}
+                                    <span className="font-mono text-[11px] text-[var(--ui-muted)]">[{group.group_id}]</span>
+                                  </span>
+                                  <span className="text-[11px] text-[var(--ui-muted)]">
+                                    出现位置：{group.roots.join(" | ")}
+                                  </span>
+                                  <span className="text-[11px] text-[var(--ui-muted)]">
+                                    项目：{group.item_ids.join(" | ")}
+                                  </span>
+                                </span>
+                              </label>
+                            );
+                          })}
+                          {legacyArtifacts.map((artifact) => (
+                            <div
+                              key={artifact.path}
+                              className={`rounded-[var(--radius-md)] border border-[#ddcfc2] bg-[#ecddd8] px-2.5 py-2 text-xs ${OUTSET_SMALL}`}
+                            >
+                              <div className="font-semibold text-[#7d473e]">
+                                Legacy: {artifact.title} <span className="font-mono text-[11px]">[{artifact.root}]</span>
                               </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </details>
-                  </section>
+                              <div className="mt-0.5 text-[11px] text-[#8a4f45]">{artifact.path}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </details>
+                </div>
+              </details>
 
-                  <section className={`grid gap-2 rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${INSET_SMALL}`}>
-                    <div className="flex flex-wrap items-start justify-between gap-2">
-                      <div className="grid gap-1">
-                        <h2 className={PANEL_TITLE_CLASS}>Windows 11 经典菜单开关</h2>
-                        <p className="text-sm text-[var(--ui-muted)]">
-                          这是当前用户级系统开关，会影响整个资源管理器右键菜单，而不只是 ExecLink。
-                        </p>
-                      </div>
-                      <span
-                        className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${
-                          win11ClassicMenuStatus.enabled
-                            ? "border-[#b9caaa] bg-[#e5eddc] text-[#4f6b35]"
-                            : "border-[#d8cfbf] bg-[#efe7db] text-[#7b6850]"
-                        }`}
-                      >
-                        {win11ClassicMenuStatus.enabled ? "已启用经典菜单" : "原生顶层菜单"}
-                      </span>
-                    </div>
-                    <p className="text-sm text-[var(--ui-muted)]">{win11ClassicMenuStatus.message}</p>
-                    <div className="flex flex-wrap gap-2.5">
-                      <button
-                        className={RUNTIME_PRIMARY_BUTTON_CLASS}
-                        onClick={onEnableWin11ClassicMenu}
-                        disabled={working || loading || win11ClassicMenuStatus.enabled}
-                      >
-                        启用经典右键菜单
-                      </button>
-                      <button
-                        className={RUNTIME_SECONDARY_BUTTON_CLASS}
-                        onClick={onDisableWin11ClassicMenu}
-                        disabled={working || loading || !win11ClassicMenuStatus.enabled}
-                      >
-                        恢复 Win11 原生菜单
-                      </button>
-                    </div>
-                    <div
-                      className={`grid gap-1 rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[#efe7db] px-3 py-2 text-xs text-[#6e6255] ${OUTSET_SMALL}`}
+              <details className={COLLAPSIBLE_PANEL_CLASS}>
+                <summary className={COLLAPSIBLE_PANEL_SUMMARY_CLASS}>Windows 11 经典菜单开关</summary>
+                <div className="mt-3 grid gap-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <p className="max-w-[30rem] text-sm text-[var(--ui-muted)]">
+                      这是当前用户级系统开关，会影响整个资源管理器右键菜单，而不只是 ExecLink。
+                    </p>
+                    <span
+                      className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${
+                        win11ClassicMenuStatus.enabled
+                          ? "border-[#b9caaa] bg-[#e5eddc] text-[#4f6b35]"
+                          : "border-[#d8cfbf] bg-[#efe7db] text-[#7b6850]"
+                      }`}
                     >
-                      <p>若切换后未立即生效，请先点击上方“Explorer 兜底刷新”；仍未变化时请重新登录。</p>
-                      <p>注册表路径：<code>{win11ClassicMenuStatus.registry_path}</code></p>
-                      <p>
-                        当前版本的 ExecLink 仍是经典菜单方案；若不启用该系统开关，在 Windows 11 上仍需通过“显示更多选项”进入。
-                      </p>
+                      {win11ClassicMenuStatus.enabled ? "已启用经典菜单" : "原生顶层菜单"}
+                    </span>
+                  </div>
+                  <p className="text-sm text-[var(--ui-muted)]">{win11ClassicMenuStatus.message}</p>
+                  <div className="flex flex-wrap gap-2.5">
+                    <button
+                      className={RUNTIME_PRIMARY_BUTTON_CLASS}
+                      onClick={onEnableWin11ClassicMenu}
+                      disabled={working || loading || win11ClassicMenuStatus.enabled}
+                    >
+                      启用经典右键菜单
+                    </button>
+                    <button
+                      className={RUNTIME_SECONDARY_BUTTON_CLASS}
+                      onClick={onDisableWin11ClassicMenu}
+                      disabled={working || loading || !win11ClassicMenuStatus.enabled}
+                    >
+                      恢复 Win11 原生菜单
+                    </button>
+                  </div>
+                  <div
+                    className={`grid gap-1 rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[#efe7db] px-3 py-2 text-xs text-[#6e6255] ${OUTSET_SMALL}`}
+                  >
+                    <p>若切换后未立即生效，请先点击上方“Explorer 兜底刷新”；仍未变化时请重新登录。</p>
+                    <p>注册表路径：<code>{win11ClassicMenuStatus.registry_path}</code></p>
+                    <p>
+                      当前版本的 ExecLink 仍是经典菜单方案；若不启用该系统开关，在 Windows 11 上仍需通过“显示更多选项”进入。
+                    </p>
+                  </div>
+                </div>
+              </details>
+
+              <details className={COLLAPSIBLE_PANEL_CLASS}>
+                <summary className={COLLAPSIBLE_PANEL_SUMMARY_CLASS}>运行与安装策略</summary>
+                <div className="mt-3 grid gap-4">
+                  <p className="text-sm text-[var(--ui-muted)]">
+                    调整菜单命令的终端运行方式、uv 安装回退策略，以及安装流程的超时窗口。
+                  </p>
+                  <label className={FIELD_CLASS}>
+                    <span className={FIELD_LABEL_CLASS}>终端运行器</span>
+                    <span className="relative block">
+                      <select
+                        className={SELECT_CLASS}
+                        value={config.terminal_mode}
+                        onChange={(event) =>
+                          setConfig((prev) => ({
+                            ...prev,
+                            terminal_mode: event.target.value as AppConfig["terminal_mode"]
+                          }))
+                        }
+                      >
+                        {TERMINAL_MODE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-[var(--ui-light)]">
+                        v
+                      </span>
+                    </span>
+                  </label>
+                  <section className={`grid gap-3 rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${INSET_SMALL}`}>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="grid gap-0.5">
+                        <span className="text-sm font-semibold text-[var(--ui-text)]">uv 安装源策略</span>
+                        <span className="text-xs text-[var(--ui-muted)]">
+                          当前：{uvInstallSourceModeLabel(config.uv_install_source_mode)}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className={RUNTIME_SECONDARY_BUTTON_CLASS}
+                        disabled={working || loading}
+                        onClick={() => setUvSourceDialog({ open: true })}
+                      >
+                        选择策略
+                      </button>
+                    </div>
+                    <p className="text-xs text-[var(--ui-muted)]">
+                      自动策略会按 <code>winget -&gt; 官方脚本 -&gt; 清华镜像 -&gt; 阿里镜像</code> 依次回退。
+                    </p>
+                  </section>
+                  <section className={`grid gap-3 rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[var(--ui-base)] p-3 ${INSET_SMALL}`}>
+                    <h3 className="text-sm font-semibold text-[var(--ui-text)]">安装超时（秒）</h3>
+                    <p className="text-xs text-[var(--ui-muted)]">
+                      所有安装流程都会显示倒计时，超时后会自动返回失败详情。范围超出会自动纠正到安全区间。
+                    </p>
+                    <div className="grid gap-2">
+                      {INSTALL_TIMEOUT_FIELDS.map((field) => {
+                        const bounds = INSTALL_TIMEOUT_BOUNDS[field.key];
+                        const valueSeconds = Math.round(effectiveInstallTimeouts[field.key] / 1000);
+                        return (
+                          <label key={field.key} className={FIELD_CLASS}>
+                            <span className="text-xs font-semibold text-[var(--ui-text)]">{field.title}</span>
+                            <span className="text-[11px] text-[var(--ui-muted)]">{field.description}</span>
+                            <input
+                              type="number"
+                              min={Math.round(bounds.min / 1000)}
+                              max={Math.round(bounds.max / 1000)}
+                              step={1}
+                              className={INPUT_CLASS}
+                              value={valueSeconds}
+                              onChange={(event) => {
+                                const next = Number.parseInt(event.target.value, 10);
+                                if (!Number.isFinite(next)) {
+                                  return;
+                                }
+                                setInstallTimeoutValueMs(field.key, next * 1000);
+                              }}
+                            />
+                            <span className="text-[11px] text-[var(--ui-muted)]">
+                              范围：{Math.round(bounds.min / 1000)} ~ {Math.round(bounds.max / 1000)} 秒
+                            </span>
+                          </label>
+                        );
+                      })}
                     </div>
                   </section>
                 </div>
