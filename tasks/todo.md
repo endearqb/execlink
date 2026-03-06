@@ -1175,15 +1175,28 @@
 # 2026-03-06 推送 Git 与发布 Release
 
 ## 计划清单
-- [ ] 核对当前工作区、远端、tag 与 GitHub Release 状态。
-- [ ] 提交当前工作区并推送到 `origin/main`。
-- [ ] 创建并推送 `v0.2.10` tag。
-- [ ] 发布 GitHub Release 并上传 MSI / NSIS 安装包。
-- [ ] 回填执行记录与回顾。
+- [x] 核对当前工作区、远端、tag 与 GitHub Release 状态。
+- [x] 提交当前工作区并推送到 `origin/main`。
+- [x] 创建并推送 `v0.2.10` tag。
+- [x] 发布 GitHub Release 并上传 MSI / NSIS 安装包。
+- [x] 回填执行记录与回顾。
 
 ## 执行记录
-- 待执行
+- 核对结果：
+- 当前分支为 `main`，远端为 `origin=https://github.com/endearqb/execlink.git`。
+- 当前版本为 `0.2.10`，`v0.2.10` 在本次发布前既没有本地 tag，也没有 GitHub Release。
+- 将当前工作区改动整理为提交 `d273fec feat: polish config UX and docs for v0.2.10`，并已推送到 `origin/main`。
+- 创建并推送 tag：`v0.2.10`。
+- 发布 GitHub Release：`https://github.com/endearqb/execlink/releases/tag/v0.2.10`
+- 上传产物：
+- `src-tauri/target/release/bundle/msi/ExecLink_0.2.10_x64_zh-CN.msi`
+- `src-tauri/target/release/bundle/nsis/ExecLink_0.2.10_x64-setup.exe`
+- Release 状态核验通过：
+- `isDraft=false`
+- `isPrerelease=false`
+- `publishedAt=2026-03-06T15:49:45Z`
 
 ## 回顾
-- 待回填
+- 发布前先核对“当前版本号 / tag 是否已存在 / Release 是否已存在 / 安装包是否已构建完毕”，可以避免重复 tag、覆盖 release 或把旧产物挂到新版本下。
+- 如果按仓库工作流需要在发布后补任务记录，记录补完后要再推一次 `main`，否则发布日志只留在本地工作区里。
 
