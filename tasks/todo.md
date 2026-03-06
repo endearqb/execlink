@@ -984,15 +984,24 @@
 # 2026-03-06 推送 Git 与发布 v0.2.9
 
 ## 计划清单
-- [ ] 复核当前工作区、远端状态与 `v0.2.9` tag / release 状态。
-- [ ] 提交当前工作区改动并推送到 `origin/main`。
-- [ ] 创建并推送 `v0.2.9` tag。
-- [ ] 发布 GitHub Release 并附带 MSI / NSIS 安装包。
-- [ ] 回填执行记录与回顾。
+- [x] 复核当前工作区、远端状态与 `v0.2.9` tag / release 状态。
+- [x] 提交当前工作区改动并推送到 `origin/main`。
+- [x] 创建并推送 `v0.2.9` tag。
+- [x] 发布 GitHub Release 并附带 MSI / NSIS 安装包。
+- [x] 回填执行记录与回顾。
 
 ## 执行记录
+- 使用 `git status --short`、`git tag --list v0.2.9`、`gh release view v0.2.9` 复核现场，确认发布前远端不存在 `v0.2.9` release，本地仅剩未跟踪的 `tasks/task.md` 草稿文件。
+- 将本轮功能改动整理为提交 `d27982f feat: ship rust context-menu runtime for v0.2.9`，并推送到 `origin/main`。
+- 创建并推送注释标签 `v0.2.9`。
+- 使用 `gh release create v0.2.9` 发布正式 Release，上传两个安装包：
+- `ExecLink_0.2.9_x64_zh-CN.msi`
+- `ExecLink_0.2.9_x64-setup.exe`
+- 发布后通过 `gh release view v0.2.9 --json ...` 复核，确认 Release 已公开，两个资产均为 `uploaded` 状态。
 
 ## 回顾
+- 本次 Git 推送与 Release 发布已完成，正式发布地址为 `https://github.com/endearqb/execlink/releases/tag/v0.2.9`。
+- `tasks/task.md` 仍保持未跟踪状态，避免把临时排查记录混入正式版本提交。
 
 # 2026-03-06 右键菜单命令转义 + CLI 可见性链路修复
 
