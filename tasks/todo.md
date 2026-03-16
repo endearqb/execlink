@@ -1304,15 +1304,29 @@
 # 2026-03-16 推送 Git 与发布 v0.2.11
 
 ## 计划清单
-- [ ] 复核当前工作区、远端、`v0.2.11` tag 与 GitHub Release 状态。
-- [ ] 提交当前工作区并推送到 `origin/main`。
-- [ ] 创建并推送 `v0.2.11` tag。
-- [ ] 发布 GitHub Release 并上传 MSI / NSIS 安装包。
-- [ ] 回填执行记录与回顾。
+- [x] 复核当前工作区、远端、`v0.2.11` tag 与 GitHub Release 状态。
+- [x] 提交当前工作区并推送到 `origin/main`。
+- [x] 创建并推送 `v0.2.11` tag。
+- [x] 发布 GitHub Release 并上传 MSI / NSIS 安装包。
+- [x] 回填执行记录与回顾。
 
 ## 执行记录
-- 已创建本轮发布任务清单，准备执行 Git 推送与 `v0.2.11` Release 发布。
+- 发布前核对结果：
+- 当前分支为 `main`，远端为 `origin=https://github.com/endearqb/execlink.git`。
+- 发布前 `v0.2.11` 既没有本地 tag，也没有 GitHub Release。
+- 当前工作区除待提交改动外，还存在未跟踪文件 `tasks/task.md`；本次未将其纳入提交。
+- 已将本轮功能与版本改动整理为提交 `0d6c1e0 feat: ship v0.2.11 install flow polish`，并推送到 `origin/main`。
+- 已创建并推送 tag：`v0.2.11`。
+- 已发布 GitHub Release：`https://github.com/endearqb/execlink/releases/tag/v0.2.11`
+- Release 上传产物：
+- `ExecLink_0.2.11_x64_zh-CN.msi`
+- `ExecLink_0.2.11_x64-setup.exe`
+- Release 状态核验通过：
+- `isDraft=false`
+- `isPrerelease=false`
+- `publishedAt=2026-03-16T07:07:20Z`
 
 ## 回顾
-- 待完成。
+- 发布动作适合拆成“功能提交 -> 推 main -> 打 tag -> 发 release -> 回填记录 -> 再补推文档提交”的顺序；这样既能保证 release 指向功能提交，也能让仓库记录最终闭环。
+- 对临时文件和个人草稿（如 `tasks/task.md`、临时 release note 文件）要明确排除，避免把发布辅助文件误带进正式提交。
 
