@@ -9,12 +9,13 @@ use tauri::AppHandle;
 
 use crate::{
     context_menu_builder, context_menu_icons, context_menu_service, detect, embedded_terminal,
-    logging, process_util, shell_notify, terminal, win11_classic_menu,
+    logging, process_util, shell_notify,
     state::{
         self, ActionResult, AppConfig, CliInstallHint, CliStatusMap, CliUserPathStatus,
         DiagnosticsInfo, InitialState, InstallLaunchRequest, InstallPrereqStatus,
         PowerShellPs1PolicyStatus,
     },
+    terminal, win11_classic_menu,
 };
 
 const CLEANUP_CONFIRM_TOKEN: &str = "CONFIRM_CLEANUP_EXECLINK";
@@ -193,7 +194,10 @@ fn now_epoch_seconds() -> String {
         .unwrap_or_else(|_| "0".to_string())
 }
 
-fn prepare_config_for_save(mut incoming: AppConfig, persisted_runtime: state::RuntimeState) -> AppConfig {
+fn prepare_config_for_save(
+    mut incoming: AppConfig,
+    persisted_runtime: state::RuntimeState,
+) -> AppConfig {
     incoming.version = state::CONFIG_VERSION;
     incoming.no_exit = true;
     // runtime 字段由后端维护，避免被前端旧状态覆盖。
@@ -551,7 +555,8 @@ fn resolve_cli_command_dir(key: &str) -> Option<PathBuf> {
     }
 
     if matches!(key, "kimi" | "kimi_web") {
-        return resolve_kimi_executable_path().and_then(|path| path.parent().map(|p| p.to_path_buf()));
+        return resolve_kimi_executable_path()
+            .and_then(|path| path.parent().map(|p| p.to_path_buf()));
     }
     None
 }
@@ -581,9 +586,9 @@ fn user_path_contains_dir(user_path: Option<&str>, command_dir: &Path) -> bool {
         return false;
     };
     let target = normalize_windows_path_for_compare(command_dir.to_string_lossy().as_ref());
-    user_path_value.split(';').any(|segment| {
-        normalize_windows_path_for_compare(segment) == target
-    })
+    user_path_value
+        .split(';')
+        .any(|segment| normalize_windows_path_for_compare(segment) == target)
 }
 
 fn build_add_user_path_command(command_dir: &Path) -> String {
@@ -609,7 +614,8 @@ fn build_cli_user_path_status(key: &str, user_path: Option<&str>) -> CliUserPath
             command_dir: None,
             needs_user_path_fix: false,
             add_user_path_command: None,
-            message: "CLI command path is unavailable. Install or detect the CLI first.".to_string(),
+            message: "CLI command path is unavailable. Install or detect the CLI first."
+                .to_string(),
         };
     };
 
@@ -633,15 +639,14 @@ fn build_cli_user_path_status(key: &str, user_path: Option<&str>) -> CliUserPath
 }
 
 fn detect_powershell_effective_policy() -> Result<String, String> {
-    run_powershell_script("Get-ExecutionPolicy")
-        .map(|value| {
-            let trimmed = value.trim().to_string();
-            if trimmed.is_empty() {
-                "Unknown".to_string()
-            } else {
-                trimmed
-            }
-        })
+    run_powershell_script("Get-ExecutionPolicy").map(|value| {
+        let trimmed = value.trim().to_string();
+        if trimmed.is_empty() {
+            "Unknown".to_string()
+        } else {
+            trimmed
+        }
+    })
 }
 
 fn is_ps1_policy_blocked(policy: &str) -> bool {
@@ -767,7 +772,8 @@ pub fn get_install_prereq_status() -> InstallPrereqStatus {
         git: detect::command_exists_with_path("git", path_ref),
         node: detect::command_exists_with_path("node", path_ref),
         npm: detect::command_exists_with_path("npm", path_ref),
-        uv: detect::command_exists_with_path("uv", path_ref) || resolve_uv_executable_path().is_some(),
+        uv: detect::command_exists_with_path("uv", path_ref)
+            || resolve_uv_executable_path().is_some(),
         pwsh: detect::command_exists_with_path("pwsh", path_ref),
         winget: detect::command_exists_with_path("winget", path_ref),
         wsl: detect::command_exists_with_path("wsl", path_ref),
@@ -780,7 +786,10 @@ pub fn get_cli_user_path_statuses() -> BTreeMap<String, CliUserPathStatus> {
     let mut statuses = BTreeMap::new();
     for profile in CLI_INSTALL_PROFILES {
         let key = profile.key.to_string();
-        statuses.insert(key.clone(), build_cli_user_path_status(&key, user_path.as_deref()));
+        statuses.insert(
+            key.clone(),
+            build_cli_user_path_status(&key, user_path.as_deref()),
+        );
     }
     statuses
 }
@@ -932,7 +941,8 @@ pub fn launch_prereq_install(git_source: Option<String>) -> ActionResult {
         );
     }
 
-    let Some(command) = build_prereq_install_command(needs_git, needs_node, parsed_git_source) else {
+    let Some(command) = build_prereq_install_command(needs_git, needs_node, parsed_git_source)
+    else {
         return ActionResult::ok_with_code(
             "prereq_already_installed",
             "已检测到 Git 与 Node.js，无需安装。",
@@ -982,7 +992,10 @@ pub fn launch_prereq_install(git_source: Option<String>) -> ActionResult {
 pub fn launch_winget_install(source: Option<String>) -> ActionResult {
     let prereq = get_install_prereq_status();
     if prereq.winget {
-        return ActionResult::ok_with_code("winget_already_installed", "已检测到 winget，无需安装。");
+        return ActionResult::ok_with_code(
+            "winget_already_installed",
+            "已检测到 winget，无需安装。",
+        );
     }
 
     let parsed_source = parse_winget_install_source(source);
@@ -997,7 +1010,10 @@ pub fn launch_winget_install(source: Option<String>) -> ActionResult {
             ActionResult {
                 ok: true,
                 code: "winget_install_launch_started".to_string(),
-                message: format!("已启动 winget 管理员安装终端（{}），完成后将自动复检。", source_label),
+                message: format!(
+                    "已启动 winget 管理员安装终端（{}），完成后将自动复检。",
+                    source_label
+                ),
                 detail: Some(format!("{command}; {output}")),
             }
         }
@@ -1044,7 +1060,10 @@ pub fn launch_git_install() -> ActionResult {
 pub fn launch_nodejs_install() -> ActionResult {
     let prereq = get_install_prereq_status();
     if prereq.node {
-        return ActionResult::ok_with_code("nodejs_already_installed", "已检测到 Node.js，无需安装。");
+        return ActionResult::ok_with_code(
+            "nodejs_already_installed",
+            "已检测到 Node.js，无需安装。",
+        );
     }
     if !prereq.winget {
         return ActionResult::err(
@@ -1177,12 +1196,11 @@ pub fn launch_cli_auth(key: String) -> ActionResult {
         Ok(_) => ActionResult {
             ok: true,
             code: "auth_launch_started".to_string(),
-            message: format!("已启动 {} 授权终端，请完成登录后返回应用。", profile.display_name),
-            detail: Some(format!(
-                "{} {}",
-                executable,
-                args.join(" ")
-            )),
+            message: format!(
+                "已启动 {} 授权终端，请完成登录后返回应用。",
+                profile.display_name
+            ),
+            detail: Some(format!("{} {}", executable, args.join(" "))),
         },
         Err(error) => ActionResult::err("auth_launch_failed", "启动授权失败", error.to_string()),
     }
@@ -1192,7 +1210,10 @@ pub fn launch_cli_auth(key: String) -> ActionResult {
 pub fn verify_kimi_installation() -> ActionResult {
     let detected = detect::detect_all_clis();
     if detected.kimi || detected.kimi_web {
-        return ActionResult::ok_with_code("verify_detected", "Kimi 复检通过，已检测到可执行命令。");
+        return ActionResult::ok_with_code(
+            "verify_detected",
+            "Kimi 复检通过，已检测到可执行命令。",
+        );
     }
 
     if let Some(kimi_path) = resolve_kimi_executable_path() {
@@ -1481,9 +1502,10 @@ pub fn cleanup_app_data(confirm_token: Option<String>) -> ActionResult {
     ActionResult::ok_with_code("cleanup_done", format!("已清理应用数据目录：{removed}"))
 }
 
-
 #[tauri::command]
-pub fn preview_context_menu_plan(config: AppConfig) -> Result<context_menu_builder::RegistryWritePlan, String> {
+pub fn preview_context_menu_plan(
+    config: AppConfig,
+) -> Result<context_menu_builder::RegistryWritePlan, String> {
     let normalized = prepare_config_for_save(config, state::load_app_config().runtime);
     context_menu_service::preview_registry_write_plan(&normalized)
 }
@@ -1507,7 +1529,11 @@ pub fn remove_all_execlink_context_menus() -> ActionResult {
             message: "已移除 ExecLink 右键菜单".to_string(),
             detail: Some(format!("共删除 {} 个注册表路径。", removed)),
         },
-        Err(error) => ActionResult::err("context_menu_remove_failed", "移除 ExecLink 右键菜单失败", error),
+        Err(error) => ActionResult::err(
+            "context_menu_remove_failed",
+            "移除 ExecLink 右键菜单失败",
+            error,
+        ),
     }
 }
 
@@ -1562,7 +1588,11 @@ pub fn cleanup_nilesoft_artifacts() -> ActionResult {
                 summary.removed_registry_paths, summary.removed_runtime_dirs
             )),
         },
-        Err(error) => ActionResult::err("nilesoft_artifacts_cleanup_failed", "清理旧 Nilesoft 残留失败", error),
+        Err(error) => ActionResult::err(
+            "nilesoft_artifacts_cleanup_failed",
+            "清理旧 Nilesoft 残留失败",
+            error,
+        ),
     }
 }
 
@@ -1759,7 +1789,10 @@ mod tests {
         let prepared = prepare_config_for_save(incoming, persisted.clone());
         assert_eq!(prepared.version, state::CONFIG_VERSION);
         assert_eq!(prepared.runtime.last_apply_at, persisted.last_apply_at);
-        assert_eq!(prepared.runtime.last_activate_at, persisted.last_activate_at);
+        assert_eq!(
+            prepared.runtime.last_activate_at,
+            persisted.last_activate_at
+        );
         assert_eq!(prepared.runtime.last_error, persisted.last_error);
     }
 
@@ -1832,7 +1865,9 @@ mod tests {
         assert!(command.contains("github-release/git-for-windows/git/LatestRelease/"));
         assert!(command.contains("$latestReleasePage.Links"));
         assert!(command.contains("Git%20for%20Windows%20v"));
-        assert!(command.contains("$tunaUrl = [System.Uri]::new($baseUri, $installerHref).AbsoluteUri"));
+        assert!(
+            command.contains("$tunaUrl = [System.Uri]::new($baseUri, $installerHref).AbsoluteUri")
+        );
         assert!(!command.contains("$latestReleaseUrl$installerName"));
         assert!(command.contains(NODEJS_WINGET_INSTALL_COMMAND));
         assert!(!command.contains("api.github.com/repos/git-for-windows/git/releases/latest"));
@@ -1878,24 +1913,27 @@ mod tests {
     fn should_use_npm_commands_for_claude_profile() {
         let hints = get_cli_install_hints();
         let claude = hints.get("claude").expect("claude hint");
-        assert_eq!(claude.install_command, "npm install -g @anthropic-ai/claude-code");
+        assert_eq!(
+            claude.install_command,
+            "npm install -g @anthropic-ai/claude-code"
+        );
         assert_eq!(
             claude.upgrade_command.as_deref(),
             Some("npm install -g @anthropic-ai/claude-code@latest")
         );
-        assert_eq!(claude.uninstall_command, "npm uninstall -g @anthropic-ai/claude-code");
+        assert_eq!(
+            claude.uninstall_command,
+            "npm uninstall -g @anthropic-ai/claude-code"
+        );
         assert!(claude.requires_node);
         assert!(!claude.risk_remote_script);
     }
 
     #[test]
     fn should_build_user_path_append_command() {
-        let command = build_add_user_path_command(Path::new(r"C:\Users\tester\AppData\Roaming\npm"));
+        let command =
+            build_add_user_path_command(Path::new(r"C:\Users\tester\AppData\Roaming\npm"));
         assert!(command.contains("SetEnvironmentVariable('Path'"));
         assert!(command.contains("C:\\Users\\tester\\AppData\\Roaming\\npm"));
     }
-
 }
-
-
-

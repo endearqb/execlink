@@ -136,7 +136,11 @@ fn spawn_shell_process(app: &AppHandle) -> Result<TerminalSession, String> {
     })
 }
 
-fn spawn_reader_thread(app: AppHandle, stream: &'static str, mut reader: impl Read + Send + 'static) {
+fn spawn_reader_thread(
+    app: AppHandle,
+    stream: &'static str,
+    mut reader: impl Read + Send + 'static,
+) {
     thread::spawn(move || {
         let mut buffer = [0u8; 4096];
         loop {
@@ -160,7 +164,9 @@ fn spawn_reader_thread(app: AppHandle, stream: &'static str, mut reader: impl Re
     });
 }
 
-fn with_session_mut<T>(f: impl FnOnce(&mut Option<TerminalSession>) -> Result<T, String>) -> Result<T, String> {
+fn with_session_mut<T>(
+    f: impl FnOnce(&mut Option<TerminalSession>) -> Result<T, String>,
+) -> Result<T, String> {
     let store = session_store();
     let mut guard = store
         .lock()
@@ -212,7 +218,9 @@ pub fn run_script(app: &AppHandle, script: &str) -> Result<(), String> {
         stdin
             .write_all(b"\r\n")
             .map_err(|e| format!("写入终端换行失败: {e}"))?;
-        stdin.flush().map_err(|e| format!("刷新终端输入失败: {e}"))?;
+        stdin
+            .flush()
+            .map_err(|e| format!("刷新终端输入失败: {e}"))?;
         Ok(())
     })
 }
@@ -230,7 +238,9 @@ pub fn write_input(app: &AppHandle, data: &str) -> Result<(), String> {
         stdin
             .write_all(data.as_bytes())
             .map_err(|e| format!("写入终端输入失败: {e}"))?;
-        stdin.flush().map_err(|e| format!("刷新终端输入失败: {e}"))?;
+        stdin
+            .flush()
+            .map_err(|e| format!("刷新终端输入失败: {e}"))?;
         Ok(())
     })
 }
@@ -244,9 +254,7 @@ pub fn close_session() -> Result<(), String> {
     with_session_mut(|session_opt| {
         if let Some(mut session) = session_opt.take() {
             if let Err(error) = session.child.kill() {
-                logging::log_line(&format!(
-                    "[embedded-terminal] kill child failed: {error}"
-                ));
+                logging::log_line(&format!("[embedded-terminal] kill child failed: {error}"));
             }
             let _ = session.child.wait();
         }

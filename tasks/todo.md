@@ -1200,3 +1200,119 @@
 - 发布前先核对“当前版本号 / tag 是否已存在 / Release 是否已存在 / 安装包是否已构建完毕”，可以避免重复 tag、覆盖 release 或把旧产物挂到新版本下。
 - 如果按仓库工作流需要在发布后补任务记录，记录补完后要再推一次 `main`，否则发布日志只留在本地工作区里。
 
+# 2026-03-16 固定启动方式子列表
+
+## 计划清单
+- [x] 扩展前后端配置模型到 `v11`，新增 3 个固定启动方式的名称与开关配置。
+- [x] 更新右键菜单生成逻辑，为 `claude` / `gemini` / `codex` 追加固定启动方式菜单项。
+- [x] 调整 CLI 卡片 UI，在 3 个对应卡片内新增固定启动方式子列表，并实现父级开关联动。
+- [x] 补充 Rust 单测覆盖配置迁移、菜单顺序、命令参数与过滤规则。
+- [x] 运行 `cargo test --manifest-path src-tauri/Cargo.toml` 与 `npm run build` 验证。
+
+## 执行记录
+- 共享配置已升级到 `v11`：
+- `src/types/config.ts` 新增 `fixed_launch_modes`、固定模式 key/父级映射和默认名称。
+- `src-tauri/src/state.rs` 新增 `FixedLaunchModes` / `FixedLaunchModeConfig`，旧配置会自动补齐：
+- `Claude Code (Skip Permissions)`
+- `Gemini (YOLO)`
+- `Codex (YOLO)`
+- 默认 3 个固定模式均为启用状态。
+- 右键菜单建模已扩展：
+- `src-tauri/src/context_menu_model.rs` 为 `claude`、`gemini`、`codex` 追加固定启动方式条目。
+- 固定条目命令分别为：
+- `claude --dangerously-skip-permissions`
+- `gemini --yolo`
+- `codex --yolo`
+- 菜单顺序固定为“默认项在前，固定模式紧随其后”。
+- 父级 CLI 开关关闭时，对应固定模式不会进入菜单 plan；父级开启时，再按各自子项开关决定是否生成。
+- CLI 卡片 UI 已更新：
+- `src/components/CliConfigTable.tsx` 在已检测到的 Claude / Gemini / Codex 卡片内新增“固定启动方式”子列表。
+- 子列表支持自定义名称和独立开关，不复制安装/登录/升级/卸载操作。
+- 当父级开关关闭时，子列表整体禁用并显示“随组关闭”。
+- `src/pages/Home.tsx` 已接入子项名称/开关的状态更新与保存链路。
+- 验证结果：
+- `cargo test --manifest-path src-tauri/Cargo.toml` 通过（52/52）。
+- `npm run build` 通过。
+
+## 回顾
+- 这类“已有 CLI 的固定参数变体”更适合建模为父 CLI 下的子项，而不是新 CLI 主键；这样可以复用检测、图标和菜单分组语义，避免污染安装/认证链路。
+- 配置迁移要和 UI、菜单 plan 同步落地；如果只改其中一层，很容易出现“配置能存但菜单不生效”或“菜单有条目但 UI 无法管理”的割裂状态。
+
+# 2026-03-16 统一安装升级计时与复检规则
+
+## 计划清单
+- [x] 梳理普通安装、快速安装向导、升级三条路径的现有计时与复检行为，确认真正不一致之处。
+- [x] 在 `src/pages/Home.tsx` 抽出共享“事件优先、超时兜底”的复检 helper，统一普通安装与快速安装向导的复检规则。
+- [x] 修正普通安装复检为首轮立即检测，并保留可取消能力，避免继续使用固定间隔 `setInterval` 轮询。
+- [x] 同步收口快速安装向导中的 uv、Python、Kimi、本体安装失败与复检失败文案。
+- [x] 运行 `npm run build` 验证前端编译通过，并静态复核安装/升级路径不再依赖“命令结束后固定等待一轮”。
+
+## 执行记录
+- 复核结论：
+- 升级链路原本已满足目标规则：升级命令执行成功后只做一次 `runCliVerify`，成功立即结束，失败立即返回“升级后复检未通过”。
+- 真正不一致点主要在普通安装复检：此前使用 `setInterval` 轮询，首次检测要等一个完整轮询间隔，且与快速安装向导使用了两套重复实现。
+- `src/pages/Home.tsx` 新增共享轮询模型：
+- 新增 `VerificationLoopOptions` / `VerificationLoopResult` 类型，统一“成功 / 超时 / 异常 / 取消”四类结果。
+- 新增 `pollWithCountdown` helper：所有复检逻辑都按“先立即执行一次检测，检测成功立即结束；只有持续未通过才等待下一轮，直到超时上限”运行。
+- 普通安装/卸载复检改造：
+- `startInstallRecheck` 改为基于 `pollWithCountdown` 的异步循环，不再直接使用 `setInterval`。
+- 新增 `installPollRunIdRef`、`installPollDelayResolveRef` 和 `waitForInstallPollDelay`，保留用户点击“刷新 CLI 检测”时可中断当前轮询并立即走手动检测结果的行为。
+- 成功后仍保持原有菜单同步、PATH 状态刷新和终端自动关闭逻辑，但现在首轮检测不再额外等待。
+- 快速安装向导改造：
+- uv、Python、Kimi、本体安装后的复检全部切换到 `pollWithCountdown`。
+- 安装命令失败时，向导会立刻失败并终止当前步骤；不再保留任何“命令已失败但继续等复检倒计时”的旧实现。
+- 复检成功时立即进入下一阶段；复检超时时才返回超时态；复检调用异常时返回明确的“复检失败”。
+- 文案收口：
+- 新增 `describeTerminalExecutionFailure`，把“命令执行失败”和“命令执行超时”区分开，避免继续用同一条泛化失败提示覆盖超时场景。
+- 本轮未改后端 Tauri 命令，也未改安装超时配置结构。
+
+## 回顾
+- 这类安装向导最怕“表面有倒计时，实际逻辑却有多套轮询实现”；共享 helper 能把“立即判定、超时兜底”的规则固定下来，后续再改某一条链路时更不容易漂移。
+- 普通安装的 `setInterval` 轮询虽然功能上能工作，但首轮检测天然会慢一拍，也容易和手动“刷新检测”产生并发语义；改成可取消的异步循环后，行为更直观也更稳。
+
+# 2026-03-16 版本 +0.0.1、更新 Release Note 与构建安装包
+
+## 计划清单
+- [x] 将版本从 `0.2.10` 提升到 `0.2.11`，并同步所有版本清单文件。
+- [x] 更新 `updatenote/CHANGELOG.md`，补充 `v0.2.11` release note。
+- [x] 执行版本一致性校验与安装包构建。
+- [x] 核验 MSI / NSIS 产物路径、时间戳与版本号。
+- [x] 回填执行记录与回顾。
+
+## 执行记录
+- 已在 `updatenote/CHANGELOG.md` 新增 `v0.2.11` release note，摘要覆盖两项本轮核心变更：
+- `claude` / `gemini` / `codex` 固定启动方式子项。
+- 安装与快速安装向导的“事件优先、超时兜底”计时与复检规则收敛。
+- 执行 `npm run bump:patch`，版本由 `0.2.10` 升级到 `0.2.11`。
+- `sync-version` 已同步以下版本清单：
+- `package.json`
+- `src-tauri/Cargo.toml`
+- `src-tauri/tauri.conf.json`
+- `src-tauri/wix/main.wxs`
+- 首次并行触发 `sync-version:check` / `tauri build` 时发生时序抢跑，校验读到了旧版本上下文并提示不一致；复核后确认是执行顺序问题，不是版本同步脚本异常。
+- 之后按正确顺序重新执行：
+- `npm run sync-version:check` 通过（版本一致：`0.2.11`）。
+- `npm run tauri -- build` 通过。
+- 构建产物已生成：
+- `src-tauri/target/release/bundle/msi/ExecLink_0.2.11_x64_zh-CN.msi`（3502080 bytes，2026-03-16 14:55:02）
+- `src-tauri/target/release/bundle/nsis/ExecLink_0.2.11_x64-setup.exe`（2330233 bytes，2026-03-16 14:55:17）
+
+## 回顾
+- 版本升级、版本一致性校验和 Tauri 打包这三个步骤有严格先后关系；即使脚本本身正确，并行执行也会制造“读取旧版本上下文”的假失败。
+- `CHANGELOG` 继续作为 release note 真源是合适的；做补丁版本发布时，先把“本轮用户可感知变化”压缩成 3-4 条高信号摘要，再执行版本与打包，流程最稳。
+
+# 2026-03-16 推送 Git 与发布 v0.2.11
+
+## 计划清单
+- [ ] 复核当前工作区、远端、`v0.2.11` tag 与 GitHub Release 状态。
+- [ ] 提交当前工作区并推送到 `origin/main`。
+- [ ] 创建并推送 `v0.2.11` tag。
+- [ ] 发布 GitHub Release 并上传 MSI / NSIS 安装包。
+- [ ] 回填执行记录与回顾。
+
+## 执行记录
+- 已创建本轮发布任务清单，准备执行 Git 推送与 `v0.2.11` Release 发布。
+
+## 回顾
+- 待完成。
+

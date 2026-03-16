@@ -18,7 +18,7 @@
             UpgradeCode="4741d285-ec78-5c71-bbea-1a81e704d147"
             Language="!(loc.TauriLanguage)"
             Manufacturer="endearqb"
-            Version="0.2.10">
+            Version="0.2.11">
 
         <Package Id="*"
                  Keywords="Installer"

@@ -1,6 +1,6 @@
 use crate::{
     detect,
-    state::{TerminalMode, AppResult},
+    state::{AppResult, TerminalMode},
 };
 
 use serde::Serialize;
@@ -148,8 +148,7 @@ mod tests {
 
     #[test]
     fn should_not_wrap_working_dir_placeholder_in_empty_single_quotes() {
-        let (_, command) =
-            build_final_command(TerminalMode::Pwsh, "codex", "%V").expect("command");
+        let (_, command) = build_final_command(TerminalMode::Pwsh, "codex", "%V").expect("command");
         assert!(!command.contains("''%V''"));
         assert!(command.contains("\"%V\""));
     }

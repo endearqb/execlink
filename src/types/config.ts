@@ -27,6 +27,33 @@ export const CLI_DEFAULT_TITLES: Record<CliKey, string> = {
   opencode: "OpenCode"
 };
 
+export type FixedLaunchModeParentCliKey = "claude" | "codex" | "gemini";
+export type FixedLaunchModeKey = "claude_skip_permissions" | "gemini_yolo" | "codex_yolo";
+
+export const FIXED_LAUNCH_MODE_ORDER: FixedLaunchModeKey[] = [
+  "claude_skip_permissions",
+  "gemini_yolo",
+  "codex_yolo"
+];
+
+export const FIXED_LAUNCH_MODE_DEFAULT_TITLES: Record<FixedLaunchModeKey, string> = {
+  claude_skip_permissions: "Claude Code (Skip Permissions)",
+  gemini_yolo: "Gemini (YOLO)",
+  codex_yolo: "Codex (YOLO)"
+};
+
+export const FIXED_LAUNCH_MODE_PARENT: Record<FixedLaunchModeKey, FixedLaunchModeParentCliKey> = {
+  claude_skip_permissions: "claude",
+  gemini_yolo: "gemini",
+  codex_yolo: "codex"
+};
+
+export const FIXED_LAUNCH_MODE_BY_PARENT: Record<FixedLaunchModeParentCliKey, FixedLaunchModeKey[]> = {
+  claude: ["claude_skip_permissions"],
+  gemini: ["gemini_yolo"],
+  codex: ["codex_yolo"]
+};
+
 const CLI_KEY_SET = new Set<CliKey>(CLI_DEFAULT_ORDER);
 
 export function normalizeCliOrder(order: readonly string[] | null | undefined): CliKey[] {
@@ -61,6 +88,17 @@ export interface CliDisplayNames {
   kimi_web: string;
   qwencode: string;
   opencode: string;
+}
+
+export interface FixedLaunchModeConfig {
+  enabled: boolean;
+  display_name: string;
+}
+
+export interface FixedLaunchModesConfig {
+  claude_skip_permissions: FixedLaunchModeConfig;
+  gemini_yolo: FixedLaunchModeConfig;
+  codex_yolo: FixedLaunchModeConfig;
 }
 
 export interface RuntimeState {
@@ -120,6 +158,7 @@ export interface AppConfig {
   use_windows_terminal: boolean;
   no_exit: boolean;
   toggles: Record<CliKey, boolean>;
+  fixed_launch_modes: FixedLaunchModesConfig;
   runtime: RuntimeState;
 }
 
@@ -336,7 +375,7 @@ export const DEFAULT_INSTALL_TIMEOUTS: InstallTimeoutConfig = {
 };
 
 export const DEFAULT_CONFIG: AppConfig = {
-  version: 10,
+  version: 11,
   enable_context_menu: true,
   menu_title: "AI CLIs",
   cli_order: [...CLI_DEFAULT_ORDER],
@@ -365,6 +404,20 @@ export const DEFAULT_CONFIG: AppConfig = {
     kimi_web: true,
     qwencode: true,
     opencode: true
+  },
+  fixed_launch_modes: {
+    claude_skip_permissions: {
+      enabled: true,
+      display_name: FIXED_LAUNCH_MODE_DEFAULT_TITLES.claude_skip_permissions
+    },
+    gemini_yolo: {
+      enabled: true,
+      display_name: FIXED_LAUNCH_MODE_DEFAULT_TITLES.gemini_yolo
+    },
+    codex_yolo: {
+      enabled: true,
+      display_name: FIXED_LAUNCH_MODE_DEFAULT_TITLES.codex_yolo
+    }
   },
   runtime: {
     last_apply_at: null,

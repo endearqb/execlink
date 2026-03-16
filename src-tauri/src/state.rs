@@ -7,17 +7,11 @@ use std::{
 };
 
 pub type AppResult<T> = Result<T, String>;
-pub const CONFIG_VERSION: u32 = 10;
+pub const CONFIG_VERSION: u32 = 11;
 const APP_DIR_NAME: &str = "execlink";
 const LEGACY_APP_DIR_NAME: &str = "AI-CLI-Switch";
 const KNOWN_CLI_KEYS: [&str; 7] = [
-    "claude",
-    "codex",
-    "gemini",
-    "kimi",
-    "kimi_web",
-    "qwencode",
-    "opencode",
+    "claude", "codex", "gemini", "kimi", "kimi_web", "qwencode", "opencode",
 ];
 
 pub fn default_cli_order() -> Vec<String> {
@@ -167,6 +161,7 @@ pub struct AppConfig {
     pub use_windows_terminal: bool,
     pub no_exit: bool,
     pub toggles: CliToggles,
+    pub fixed_launch_modes: FixedLaunchModes,
     pub runtime: RuntimeState,
 }
 
@@ -192,6 +187,21 @@ pub struct CliDisplayNames {
     pub kimi_web: String,
     pub qwencode: String,
     pub opencode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FixedLaunchModes {
+    pub claude_skip_permissions: FixedLaunchModeConfig,
+    pub gemini_yolo: FixedLaunchModeConfig,
+    pub codex_yolo: FixedLaunchModeConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FixedLaunchModeConfig {
+    pub enabled: bool,
+    pub display_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,6 +250,34 @@ impl Default for CliDisplayNames {
     }
 }
 
+impl Default for FixedLaunchModeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            display_name: String::new(),
+        }
+    }
+}
+
+impl Default for FixedLaunchModes {
+    fn default() -> Self {
+        Self {
+            claude_skip_permissions: FixedLaunchModeConfig {
+                enabled: true,
+                display_name: "Claude Code (Skip Permissions)".to_string(),
+            },
+            gemini_yolo: FixedLaunchModeConfig {
+                enabled: true,
+                display_name: "Gemini (YOLO)".to_string(),
+            },
+            codex_yolo: FixedLaunchModeConfig {
+                enabled: true,
+                display_name: "Codex (YOLO)".to_string(),
+            },
+        }
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -257,6 +295,7 @@ impl Default for AppConfig {
             use_windows_terminal: true,
             no_exit: true,
             toggles: CliToggles::default(),
+            fixed_launch_modes: FixedLaunchModes::default(),
             runtime: RuntimeState::default(),
         }
     }
@@ -495,6 +534,21 @@ fn normalize_display_names(display_names: &mut CliDisplayNames) {
     normalize_text_field(&mut display_names.opencode, "OpenCode");
 }
 
+fn normalize_fixed_launch_modes(fixed_launch_modes: &mut FixedLaunchModes) {
+    normalize_text_field(
+        &mut fixed_launch_modes.claude_skip_permissions.display_name,
+        "Claude Code (Skip Permissions)",
+    );
+    normalize_text_field(
+        &mut fixed_launch_modes.gemini_yolo.display_name,
+        "Gemini (YOLO)",
+    );
+    normalize_text_field(
+        &mut fixed_launch_modes.codex_yolo.display_name,
+        "Codex (YOLO)",
+    );
+}
+
 fn normalize_cli_order(cli_order: &mut Vec<String>) {
     let mut seen = HashSet::new();
     let mut normalized = Vec::with_capacity(KNOWN_CLI_KEYS.len());
@@ -528,14 +582,20 @@ fn normalize_install_timeouts(timeouts: &mut InstallTimeoutConfig) {
         clamp_timeout(timeouts.terminal_script_timeout_ms, 30_000, 30 * 60 * 1000);
     timeouts.install_recheck_timeout_ms =
         clamp_timeout(timeouts.install_recheck_timeout_ms, 60_000, 30 * 60 * 1000);
-    timeouts.quick_setup_detect_timeout_ms =
-        clamp_timeout(timeouts.quick_setup_detect_timeout_ms, 60_000, 30 * 60 * 1000);
+    timeouts.quick_setup_detect_timeout_ms = clamp_timeout(
+        timeouts.quick_setup_detect_timeout_ms,
+        60_000,
+        30 * 60 * 1000,
+    );
     timeouts.mirror_probe_timeout_ms =
         clamp_timeout(timeouts.mirror_probe_timeout_ms, 5_000, 120_000);
     timeouts.python_runtime_check_timeout_ms =
         clamp_timeout(timeouts.python_runtime_check_timeout_ms, 5_000, 180_000);
-    timeouts.winget_install_recheck_timeout_ms =
-        clamp_timeout(timeouts.winget_install_recheck_timeout_ms, 60_000, 15 * 60 * 1000);
+    timeouts.winget_install_recheck_timeout_ms = clamp_timeout(
+        timeouts.winget_install_recheck_timeout_ms,
+        60_000,
+        15 * 60 * 1000,
+    );
 }
 
 fn normalize_config(mut config: AppConfig) -> AppConfig {
@@ -556,10 +616,14 @@ fn normalize_config(mut config: AppConfig) -> AppConfig {
         config.terminal_theme_mode = TerminalThemeMode::Auto;
         config.ps_prompt_style = PsPromptStyle::Basic;
     }
+    if config.version < 11 {
+        config.fixed_launch_modes = FixedLaunchModes::default();
+    }
     normalize_text_field(&mut config.menu_title, "AI CLIs");
     normalize_text_field(&mut config.terminal_theme_id, "vscode-dark-plus");
     normalize_cli_order(&mut config.cli_order);
     normalize_display_names(&mut config.display_names);
+    normalize_fixed_launch_modes(&mut config.fixed_launch_modes);
     normalize_install_timeouts(&mut config.install_timeouts);
     config.no_exit = true;
     config.use_windows_terminal = matches!(config.terminal_mode, TerminalMode::Wt);
@@ -646,7 +710,11 @@ mod tests {
         cfg.toggles.kimi_web = false;
         cfg.toggles.qwencode = false;
         cfg.toggles.opencode = false;
-        cfg.cli_order = vec!["codex".to_string(), "gemini".to_string(), "codex".to_string()];
+        cfg.cli_order = vec![
+            "codex".to_string(),
+            "gemini".to_string(),
+            "codex".to_string(),
+        ];
 
         let normalized = normalize_config(cfg);
         assert_eq!(normalized.version, CONFIG_VERSION);
@@ -654,6 +722,29 @@ mod tests {
         assert_eq!(normalized.display_names.kimi_web, "Kimi Web");
         assert_eq!(normalized.display_names.qwencode, "Qwen Code");
         assert_eq!(normalized.display_names.opencode, "OpenCode");
+        assert_eq!(
+            normalized
+                .fixed_launch_modes
+                .claude_skip_permissions
+                .display_name,
+            "Claude Code (Skip Permissions)"
+        );
+        assert!(
+            normalized
+                .fixed_launch_modes
+                .claude_skip_permissions
+                .enabled
+        );
+        assert_eq!(
+            normalized.fixed_launch_modes.gemini_yolo.display_name,
+            "Gemini (YOLO)"
+        );
+        assert!(normalized.fixed_launch_modes.gemini_yolo.enabled);
+        assert_eq!(
+            normalized.fixed_launch_modes.codex_yolo.display_name,
+            "Codex (YOLO)"
+        );
+        assert!(normalized.fixed_launch_modes.codex_yolo.enabled);
         assert_eq!(normalized.terminal_mode, TerminalMode::Auto);
         assert_eq!(normalized.terminal_theme_id, "vscode-dark-plus");
         assert_eq!(normalized.terminal_theme_mode, TerminalThemeMode::Auto);
@@ -740,6 +831,29 @@ mod tests {
         assert_eq!(normalized.display_names.kimi_web, "Kimi Web");
         assert_eq!(normalized.display_names.qwencode, "Qwen Code");
         assert_eq!(normalized.display_names.opencode, "OpenCode");
+        assert_eq!(
+            normalized
+                .fixed_launch_modes
+                .claude_skip_permissions
+                .display_name,
+            "Claude Code (Skip Permissions)"
+        );
+        assert!(
+            normalized
+                .fixed_launch_modes
+                .claude_skip_permissions
+                .enabled
+        );
+        assert_eq!(
+            normalized.fixed_launch_modes.gemini_yolo.display_name,
+            "Gemini (YOLO)"
+        );
+        assert!(normalized.fixed_launch_modes.gemini_yolo.enabled);
+        assert_eq!(
+            normalized.fixed_launch_modes.codex_yolo.display_name,
+            "Codex (YOLO)"
+        );
+        assert!(normalized.fixed_launch_modes.codex_yolo.enabled);
         assert_eq!(normalized.terminal_mode, TerminalMode::Wt);
         assert_eq!(normalized.terminal_theme_id, "vscode-dark-plus");
         assert_eq!(normalized.terminal_theme_mode, TerminalThemeMode::Auto);
@@ -780,14 +894,86 @@ mod tests {
         let normalized = normalize_config(parsed);
         assert_eq!(normalized.version, CONFIG_VERSION);
         assert_eq!(normalized.uv_install_source_mode, UvInstallSourceMode::Auto);
-        assert_eq!(normalized.install_timeouts.terminal_script_timeout_ms, 10 * 60 * 1000);
-        assert_eq!(normalized.install_timeouts.install_recheck_timeout_ms, 10 * 60 * 1000);
-        assert_eq!(normalized.install_timeouts.quick_setup_detect_timeout_ms, 5 * 60 * 1000);
-        assert_eq!(normalized.install_timeouts.mirror_probe_timeout_ms, 20 * 1000);
-        assert_eq!(normalized.install_timeouts.python_runtime_check_timeout_ms, 15 * 1000);
         assert_eq!(
-            normalized.install_timeouts.winget_install_recheck_timeout_ms,
+            normalized.install_timeouts.terminal_script_timeout_ms,
+            10 * 60 * 1000
+        );
+        assert_eq!(
+            normalized.install_timeouts.install_recheck_timeout_ms,
+            10 * 60 * 1000
+        );
+        assert_eq!(
+            normalized.install_timeouts.quick_setup_detect_timeout_ms,
+            5 * 60 * 1000
+        );
+        assert_eq!(
+            normalized.install_timeouts.mirror_probe_timeout_ms,
+            20 * 1000
+        );
+        assert_eq!(
+            normalized.install_timeouts.python_runtime_check_timeout_ms,
+            15 * 1000
+        );
+        assert_eq!(
+            normalized
+                .install_timeouts
+                .winget_install_recheck_timeout_ms,
             3 * 60 * 1000
+        );
+    }
+
+    #[test]
+    fn should_migrate_v10_config_and_enable_fixed_launch_modes() {
+        let legacy_v10 = r#"{
+            "version": 10,
+            "menu_title": "AI CLIs",
+            "terminal_mode": "wt",
+            "display_names": {
+                "claude": "Claude Code",
+                "codex": "Codex",
+                "gemini": "Gemini",
+                "kimi": "Kimi",
+                "kimi_web": "Kimi Web",
+                "qwencode": "Qwen Code",
+                "opencode": "OpenCode"
+            },
+            "toggles": {
+                "claude": true,
+                "codex": true,
+                "gemini": true,
+                "kimi": true,
+                "kimi_web": true,
+                "qwencode": true,
+                "opencode": true
+            }
+        }"#;
+
+        let parsed = serde_json::from_str::<AppConfig>(legacy_v10).unwrap();
+        let normalized = normalize_config(parsed);
+
+        assert_eq!(normalized.version, CONFIG_VERSION);
+        assert!(
+            normalized
+                .fixed_launch_modes
+                .claude_skip_permissions
+                .enabled
+        );
+        assert_eq!(
+            normalized
+                .fixed_launch_modes
+                .claude_skip_permissions
+                .display_name,
+            "Claude Code (Skip Permissions)"
+        );
+        assert!(normalized.fixed_launch_modes.gemini_yolo.enabled);
+        assert_eq!(
+            normalized.fixed_launch_modes.gemini_yolo.display_name,
+            "Gemini (YOLO)"
+        );
+        assert!(normalized.fixed_launch_modes.codex_yolo.enabled);
+        assert_eq!(
+            normalized.fixed_launch_modes.codex_yolo.display_name,
+            "Codex (YOLO)"
         );
     }
 }

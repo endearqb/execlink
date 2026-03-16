@@ -20,12 +20,15 @@ import { useMemo, type ReactNode } from "react";
 import {
   CLI_DEFAULT_ORDER,
   CLI_DEFAULT_TITLES,
+  FIXED_LAUNCH_MODE_BY_PARENT,
   type CliInstallHint,
   type CliInstallHintMap,
   type InstallCountdownState,
   type CliUserPathStatusMap,
   type CliKey,
   type CliStatusMap,
+  type FixedLaunchModeKey,
+  type FixedLaunchModesConfig,
   type InstallPrereqStatus
 } from "../types/config";
 import { TerminalPanel } from "./TerminalPanel";
@@ -38,12 +41,18 @@ const ICON_BUTTON_CLASS = `inline-flex size-9 items-center justify-center rounde
 const ICON_BUTTON_COMPACT_CLASS = `inline-flex size-7 items-center justify-center rounded-[var(--radius-sm)] border border-[#ddd5c9] bg-[var(--ui-base)] text-[var(--ui-muted)] ${OUTSET_SMALL} outline-none transition-[box-shadow,transform,color] duration-150 hover:text-[#8a4f45] focus-visible:ring-2 focus-visible:ring-[#8f8072]/40 active:scale-95 active:shadow-[inset_1px_1px_3px_#d5d0c4,inset_-1px_-1px_3px_#ffffff] disabled:cursor-not-allowed disabled:opacity-60`;
 const NODE_DOWNLOAD_COMPACT_BUTTON_CLASS = `${BUTTON_BASE_CLASS} px-2 py-0.5 text-[10px] leading-[1.25]`;
 const INLINE_NAME_INPUT_CLASS = `w-[118px] rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[var(--ui-base)] px-2 py-1 text-xs text-[var(--ui-text)] outline-none ${INSET_SMALL} transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-[#8f8072]/35 disabled:cursor-not-allowed disabled:opacity-60 max-[420px]:w-[84px]`;
+const SUBMODE_NAME_INPUT_CLASS = `w-full rounded-[var(--radius-md)] border border-[#ddd5c9] bg-[var(--ui-base)] px-2 py-1.5 text-[11px] text-[var(--ui-text)] outline-none ${INSET_SMALL} transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-[#8f8072]/35 disabled:cursor-not-allowed disabled:opacity-60`;
 const SWITCH_ROOT_CLASS = `group relative inline-flex h-7 w-12 cursor-pointer items-center rounded-full border-0 bg-[var(--ui-base)] p-1 ${OUTSET_SMALL} transition-[box-shadow,background-color,transform] duration-150 before:pointer-events-none before:absolute before:rounded-full before:outline-2 before:outline-offset-2 before:outline-transparent data-[checked]:bg-[#d7cec0] data-[disabled]:cursor-not-allowed data-[disabled]:opacity-60 focus-visible:outline-none focus-visible:before:inset-0 focus-visible:before:outline-[#8f8072] active:scale-[0.98] active:shadow-[inset_1px_1px_3px_#d5d0c4,inset_-1px_-1px_3px_#ffffff] data-[checked]:active:bg-[#cec2b2]`;
 const SWITCH_THUMB_CLASS = `block size-5 rounded-full bg-[var(--ui-base)] ${OUTSET_SMALL} transition-transform duration-150 group-data-[checked]:translate-x-5`;
 const DETECTED_ROW_CLASS = "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2";
 const UNDETECTED_ROW_CLASS = "grid grid-cols-1 items-center";
 const HOVER_BUBBLE_BASE_CLASS =
   "pointer-events-none absolute -top-8 translate-y-0.5 whitespace-nowrap rounded-[var(--radius-pill)] bg-[#8f8072] px-2 py-1 text-[10px] text-[#f6f0e7] opacity-0 shadow-[3px_3px_6px_#d5d0c4,-3px_-3px_6px_#ffffff] transition-[opacity,transform] duration-100";
+const FIXED_LAUNCH_MODE_COMMAND_LABELS: Record<FixedLaunchModeKey, string> = {
+  claude_skip_permissions: "claude --dangerously-skip-permissions",
+  gemini_yolo: "gemini --yolo",
+  codex_yolo: "codex --yolo"
+};
 
 interface IconActionButtonProps {
   label: string;
@@ -61,12 +70,20 @@ interface CliCardRow {
   enabled: boolean;
   detected: boolean;
   hint?: CliInstallHint;
+  fixedLaunchModes: FixedLaunchModeRow[];
+}
+
+interface FixedLaunchModeRow {
+  key: FixedLaunchModeKey;
+  displayName: string;
+  enabled: boolean;
 }
 
 interface CliConfigTableProps {
   orderedCliKeys: CliKey[];
   displayNames: Record<CliKey, string>;
   toggles: Record<CliKey, boolean>;
+  fixedLaunchModes: FixedLaunchModesConfig;
   statuses: CliStatusMap;
   installHints: CliInstallHintMap;
   cliUserPathStatuses: CliUserPathStatusMap;
@@ -81,6 +98,8 @@ interface CliConfigTableProps {
   onReorder: (nextOrder: CliKey[]) => void;
   onSetDisplayName: (key: CliKey, value: string) => void;
   onSetToggle: (key: CliKey, checked: boolean) => void;
+  onSetFixedLaunchModeDisplayName: (key: FixedLaunchModeKey, value: string) => void;
+  onSetFixedLaunchModeEnabled: (key: FixedLaunchModeKey, checked: boolean) => void;
   onCopyInstallCommand: (key: CliKey) => void | Promise<void>;
   onOpenInstallDocs: (key: CliKey) => void | Promise<void>;
   onOpenNodejsDownload: () => void | Promise<void>;
@@ -109,6 +128,8 @@ interface SortableCliCardProps {
   cliUserPathStatus?: CliUserPathStatusMap[string];
   onSetDisplayName: (key: CliKey, value: string) => void;
   onSetToggle: (key: CliKey, checked: boolean) => void;
+  onSetFixedLaunchModeDisplayName: (key: FixedLaunchModeKey, value: string) => void;
+  onSetFixedLaunchModeEnabled: (key: FixedLaunchModeKey, checked: boolean) => void;
   onCopyInstallCommand: (key: CliKey) => void | Promise<void>;
   onOpenInstallDocs: (key: CliKey) => void | Promise<void>;
   onOpenNodejsDownload: () => void | Promise<void>;
@@ -170,6 +191,8 @@ function SortableCliCard({
   cliUserPathStatus,
   onSetDisplayName,
   onSetToggle,
+  onSetFixedLaunchModeDisplayName,
+  onSetFixedLaunchModeEnabled,
   onCopyInstallCommand,
   onOpenInstallDocs,
   onOpenNodejsDownload,
@@ -229,6 +252,7 @@ function SortableCliCard({
 
   const userPathFixLabel = "加入环境变量";
   const showUserPathFixAction = Boolean(cliUserPathStatus?.needs_user_path_fix);
+  const fixedLaunchModesDisabled = working || loading || !row.enabled;
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -441,6 +465,59 @@ function SortableCliCard({
         </div>
       )}
 
+      {row.detected && row.fixedLaunchModes.length > 0 ? (
+        <div className={`mt-3 rounded-[var(--radius-lg)] border border-[#ddd5c9] bg-[#f3eee6] p-3 ${OUTSET_SMALL}`}>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="grid gap-0.5">
+              <span className="text-[11px] font-semibold text-[#5f564d]">固定启动方式</span>
+              <span className="text-[10px] text-[#877a6e]">默认项会保留，固定模式会紧跟在对应 CLI 后面。</span>
+            </div>
+            {!row.enabled ? (
+              <span className="rounded-[var(--radius-pill)] border border-[#ddd5c9] bg-[#e8e1d6] px-2 py-0.5 text-[10px] font-semibold text-[#7a6e63]">
+                随组关闭
+              </span>
+            ) : null}
+          </div>
+
+          <div className="grid gap-2">
+            {row.fixedLaunchModes.map((fixedLaunchMode) => (
+              <div
+                key={fixedLaunchMode.key}
+                className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-[var(--radius-md)] border border-[#e0d7cb] bg-[var(--ui-base)] px-2.5 py-2 ${OUTSET_SMALL} ${
+                  !row.enabled ? "opacity-70" : ""
+                }`}
+              >
+                <label className="grid gap-1.5">
+                  <input
+                    className={SUBMODE_NAME_INPUT_CLASS}
+                    value={fixedLaunchMode.displayName}
+                    onChange={(event) => onSetFixedLaunchModeDisplayName(fixedLaunchMode.key, event.target.value)}
+                    disabled={fixedLaunchModesDisabled}
+                    aria-label={`${row.title} 固定启动方式名称`}
+                  />
+                  <span className="text-[10px] text-[#7a6e63]">{FIXED_LAUNCH_MODE_COMMAND_LABELS[fixedLaunchMode.key]}</span>
+                </label>
+
+                <div className="grid justify-items-end gap-1">
+                  <Switch.Root
+                    className={`${SWITCH_ROOT_CLASS} shrink-0`}
+                    checked={fixedLaunchMode.enabled}
+                    onCheckedChange={(checked) => onSetFixedLaunchModeEnabled(fixedLaunchMode.key, checked)}
+                    disabled={fixedLaunchModesDisabled}
+                    aria-label={`${fixedLaunchMode.displayName} 启用开关`}
+                  >
+                    <Switch.Thumb className={SWITCH_THUMB_CLASS} />
+                  </Switch.Root>
+                  <span className="text-[10px] text-[#7a6e63]">
+                    {!row.enabled ? "随组关闭" : fixedLaunchMode.enabled ? "已启用" : "已关闭"}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {showTerminal ? (
         <div className="mt-3">
           <TerminalPanel
@@ -461,6 +538,7 @@ export function CliConfigTable({
   orderedCliKeys,
   displayNames,
   toggles,
+  fixedLaunchModes,
   statuses,
   installHints,
   cliUserPathStatuses,
@@ -475,6 +553,8 @@ export function CliConfigTable({
   onReorder,
   onSetDisplayName,
   onSetToggle,
+  onSetFixedLaunchModeDisplayName,
+  onSetFixedLaunchModeEnabled,
   onCopyInstallCommand,
   onOpenInstallDocs,
   onOpenNodejsDownload,
@@ -492,6 +572,14 @@ export function CliConfigTable({
   const rows = useMemo<CliCardRow[]>(
     () =>
       orderedCliKeys.map((key) => ({
+        fixedLaunchModes:
+          key === "claude" || key === "codex" || key === "gemini"
+            ? FIXED_LAUNCH_MODE_BY_PARENT[key].map((fixedLaunchModeKey) => ({
+                key: fixedLaunchModeKey,
+                displayName: fixedLaunchModes[fixedLaunchModeKey].display_name,
+                enabled: fixedLaunchModes[fixedLaunchModeKey].enabled
+              }))
+            : [],
         key,
         title: CLI_DEFAULT_TITLES[key],
         displayName: displayNames[key],
@@ -499,7 +587,7 @@ export function CliConfigTable({
         detected: statuses[key],
         hint: installHints[key]
       })),
-    [orderedCliKeys, displayNames, toggles, statuses, installHints]
+    [orderedCliKeys, displayNames, toggles, fixedLaunchModes, statuses, installHints]
   );
 
   const focusMode = focusedCliKey !== null;
@@ -555,6 +643,8 @@ export function CliConfigTable({
             cliUserPathStatus={cliUserPathStatuses[row.key]}
             onSetDisplayName={onSetDisplayName}
             onSetToggle={onSetToggle}
+            onSetFixedLaunchModeDisplayName={onSetFixedLaunchModeDisplayName}
+            onSetFixedLaunchModeEnabled={onSetFixedLaunchModeEnabled}
             onCopyInstallCommand={onCopyInstallCommand}
             onOpenInstallDocs={onOpenInstallDocs}
             onOpenNodejsDownload={onOpenNodejsDownload}

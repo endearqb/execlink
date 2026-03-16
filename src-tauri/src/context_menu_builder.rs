@@ -83,7 +83,10 @@ fn build_group_keys(group: &MenuGroupPlan) -> Vec<RegistryKeySpec> {
                 // Explorer needs the empty SubCommands marker to render cascade children reliably.
                 named_value("SubCommands", ""),
                 named_value("Execlink.Owner", EXECLINK_OWNER),
-                named_value("Execlink.SchemaVersion", EXECLINK_SCHEMA_VERSION.to_string()),
+                named_value(
+                    "Execlink.SchemaVersion",
+                    EXECLINK_SCHEMA_VERSION.to_string(),
+                ),
                 named_value("Execlink.GroupId", group.group_id.clone()),
                 named_value("Execlink.GroupTitle", group.title.clone()),
                 named_value("Execlink.Target", target.target_id()),
@@ -111,7 +114,10 @@ fn build_group_keys(group: &MenuGroupPlan) -> Vec<RegistryKeySpec> {
                     default_value(""),
                     named_value("MUIVerb", item.title.clone()),
                     named_value("Execlink.Owner", EXECLINK_OWNER),
-                    named_value("Execlink.SchemaVersion", EXECLINK_SCHEMA_VERSION.to_string()),
+                    named_value(
+                        "Execlink.SchemaVersion",
+                        EXECLINK_SCHEMA_VERSION.to_string(),
+                    ),
                     named_value("Execlink.GroupId", group.group_id.clone()),
                     named_value("Execlink.ItemId", item.item_id.clone()),
                     named_value("Execlink.CliId", item.cli_id.clone()),
@@ -119,7 +125,11 @@ fn build_group_keys(group: &MenuGroupPlan) -> Vec<RegistryKeySpec> {
                     named_value("Execlink.Enabled", item.enabled.to_string()),
                 ]
                 .into_iter()
-                .chain(item.icon.as_ref().map(|icon| named_value("Icon", icon.clone())))
+                .chain(
+                    item.icon
+                        .as_ref()
+                        .map(|icon| named_value("Icon", icon.clone())),
+                )
                 .collect(),
             });
             keys.push(RegistryKeySpec {
@@ -127,7 +137,10 @@ fn build_group_keys(group: &MenuGroupPlan) -> Vec<RegistryKeySpec> {
                 values: vec![
                     default_value(&item.final_command),
                     named_value("Execlink.Owner", EXECLINK_OWNER),
-                    named_value("Execlink.SchemaVersion", EXECLINK_SCHEMA_VERSION.to_string()),
+                    named_value(
+                        "Execlink.SchemaVersion",
+                        EXECLINK_SCHEMA_VERSION.to_string(),
+                    ),
                     named_value("Execlink.Runner", runner_value(item.runner)),
                     named_value("Execlink.WorkingDirArg", DEFAULT_WORKING_DIR_ARG),
                     named_value("Execlink.CliCommand", item.cli_command.clone()),
@@ -188,7 +201,10 @@ mod tests {
         config.menu_title = "Open with ExecLink".to_string();
         let plan = build_context_menu_plan(&config).expect("plan");
         let registry = build_registry_write_plan(&plan);
-        assert!(registry.creates.iter().all(|key| !key.path.ends_with("Open with ExecLink")));
+        assert!(registry
+            .creates
+            .iter()
+            .all(|key| !key.path.ends_with("Open with ExecLink")));
     }
 
     #[test]
@@ -202,9 +218,9 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(parent_keys.len(), 4);
         assert!(parent_keys.iter().all(|key| {
-            key.values.iter().any(|value| {
-                value.name.as_deref() == Some("SubCommands") && value.data.is_empty()
-            })
+            key.values
+                .iter()
+                .any(|value| value.name.as_deref() == Some("SubCommands") && value.data.is_empty())
         }));
     }
 
@@ -237,6 +253,8 @@ mod tests {
             .unwrap_or_default();
 
         assert!(parent_icon.ends_with(",0"));
-        assert!(child_icon.replace('/', "\\").ends_with("context-menu-icons\\claude.ico"));
+        assert!(child_icon
+            .replace('/', "\\")
+            .ends_with("context-menu-icons\\claude.ico"));
     }
 }

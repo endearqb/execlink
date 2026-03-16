@@ -1,5 +1,5 @@
-use crate::state::CliStatusMap;
 use crate::process_util;
+use crate::state::CliStatusMap;
 
 fn where_exists_with_path(command: &str, path_env: Option<&str>) -> bool {
     let mut where_command = process_util::command_hidden("where.exe");

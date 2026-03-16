@@ -50,6 +50,7 @@ import {
   CLI_DEFAULT_TITLES,
   type ContextMenuStatus,
   DEFAULT_CONFIG,
+  type FixedLaunchModeKey,
   normalizeCliOrder,
   type ActionResult,
   type AppConfig,
@@ -193,6 +194,22 @@ interface InstallAttemptContext {
   expectedDetected: boolean;
   mode: InstallLaunchMode;
 }
+
+interface VerificationLoopOptions<T> {
+  label: string;
+  timeoutMs: number;
+  verify: () => Promise<T>;
+  isSuccess: (result: T) => boolean;
+  onAttempt?: (result: T) => void;
+  shouldContinue?: () => boolean;
+  waitForNextAttempt?: () => Promise<boolean>;
+}
+
+type VerificationLoopResult<T> =
+  | { status: "success"; result: T; lastResult: T }
+  | { status: "timeout"; lastResult: T | null }
+  | { status: "error"; error: unknown; lastResult: T | null }
+  | { status: "cancelled"; lastResult: T | null };
 
 interface InstallLaunchOptions {
   mode?: InstallLaunchMode;
@@ -340,6 +357,10 @@ function wingetInstallEntryLabel(entry: WingetInstallEntry) {
 
 function wingetInstallMethodLabel(method: WingetInstallMethod) {
   return method === "store" ? "微软商店手动下载" : "官方源下载";
+}
+
+function describeTerminalExecutionFailure(target: string, result: ActionResult) {
+  return result.code === "terminal_script_result_timeout" ? `内置终端执行${target}超时` : `内置终端执行${target}失败`;
 }
 
 function uvInstallSourceModeLabel(mode: UvInstallSourceMode) {
@@ -721,6 +742,8 @@ export function HomePage() {
     message: ""
   });
   const installPollTimerRef = useRef<number | null>(null);
+  const installPollRunIdRef = useRef(0);
+  const installPollDelayResolveRef = useRef<((shouldContinue: boolean) => void) | null>(null);
   const terminalAutoCloseTimerRef = useRef<number | null>(null);
   const terminalCountdownTimerRef = useRef<number | null>(null);
   const installPollExpectedRef = useRef<boolean | null>(null);
@@ -775,8 +798,17 @@ export function HomePage() {
     return host.__EXECLINK_TERMINAL_BUFFER__ ?? "";
   }, []);
 
+  const wait = useCallback((ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms)), []);
+
   const getTimeoutMs = useCallback((key: keyof InstallTimeoutConfig) => {
     return installTimeoutsRef.current[key];
+  }, []);
+
+  const clearInstallPollTimer = useCallback(() => {
+    if (installPollTimerRef.current !== null) {
+      window.clearTimeout(installPollTimerRef.current);
+      installPollTimerRef.current = null;
+    }
   }, []);
 
   const clearTerminalCountdownTimer = useCallback(() => {
@@ -834,20 +866,54 @@ export function HomePage() {
   }, [getTerminalBufferTail]);
 
   const stopInstallPolling = useCallback(() => {
-    if (installPollTimerRef.current !== null) {
-      window.clearInterval(installPollTimerRef.current);
-      installPollTimerRef.current = null;
+    installPollRunIdRef.current += 1;
+    const pendingResolve = installPollDelayResolveRef.current;
+    installPollDelayResolveRef.current = null;
+    if (pendingResolve) {
+      pendingResolve(false);
+    } else {
+      clearInstallPollTimer();
     }
     installPollExpectedRef.current = null;
     installAttemptContextRef.current = null;
     setInstallingKey(null);
     stopTerminalCountdown();
-  }, [stopTerminalCountdown]);
+  }, [clearInstallPollTimer, stopTerminalCountdown]);
+
+  const waitForInstallPollDelay = useCallback(
+    (runId: number) =>
+      new Promise<boolean>((resolve) => {
+        if (installPollRunIdRef.current !== runId) {
+          resolve(false);
+          return;
+        }
+
+        const finish = (shouldContinue: boolean) => {
+          if (installPollDelayResolveRef.current === finish) {
+            installPollDelayResolveRef.current = null;
+          }
+          clearInstallPollTimer();
+          resolve(shouldContinue && installPollRunIdRef.current === runId);
+        };
+
+        clearInstallPollTimer();
+        installPollDelayResolveRef.current = finish;
+        installPollTimerRef.current = window.setTimeout(() => {
+          finish(true);
+        }, INSTALL_RECHECK_INTERVAL_MS);
+      }),
+    [clearInstallPollTimer]
+  );
 
   useEffect(() => {
     return () => {
-      if (installPollTimerRef.current !== null) {
-        window.clearInterval(installPollTimerRef.current);
+      installPollRunIdRef.current += 1;
+      const pendingResolve = installPollDelayResolveRef.current;
+      installPollDelayResolveRef.current = null;
+      if (pendingResolve) {
+        pendingResolve(false);
+      } else {
+        clearInstallPollTimer();
       }
       if (terminalAutoCloseTimerRef.current !== null) {
         window.clearTimeout(terminalAutoCloseTimerRef.current);
@@ -856,7 +922,7 @@ export function HomePage() {
         window.clearInterval(terminalCountdownTimerRef.current);
       }
     };
-  }, []);
+  }, [clearInstallPollTimer]);
 
   useEffect(() => {
     let active = true;
@@ -1213,6 +1279,32 @@ export function HomePage() {
     }));
   }, []);
 
+  const setFixedLaunchModeEnabled = useCallback((key: FixedLaunchModeKey, checked: boolean) => {
+    setConfig((prev) => ({
+      ...prev,
+      fixed_launch_modes: {
+        ...prev.fixed_launch_modes,
+        [key]: {
+          ...prev.fixed_launch_modes[key],
+          enabled: checked
+        }
+      }
+    }));
+  }, []);
+
+  const setFixedLaunchModeDisplayName = useCallback((key: FixedLaunchModeKey, value: string) => {
+    setConfig((prev) => ({
+      ...prev,
+      fixed_launch_modes: {
+        ...prev.fixed_launch_modes,
+        [key]: {
+          ...prev.fixed_launch_modes[key],
+          display_name: value
+        }
+      }
+    }));
+  }, []);
+
   const setInstallTimeoutValueMs = useCallback((key: keyof InstallTimeoutConfig, nextValueMs: number) => {
     setConfig((prev) => ({
       ...prev,
@@ -1267,7 +1359,6 @@ export function HomePage() {
 
   const ensureWingetBeforeCliInstall = useCallback(
     async (entry: WingetInstallEntry): Promise<boolean> => {
-      const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
       const entryLabel = wingetInstallEntryLabel(entry);
       const verifyTimeoutMs = getTimeoutMs("winget_install_recheck_timeout_ms");
       try {
@@ -1350,7 +1441,7 @@ export function HomePage() {
         return false;
       }
     },
-    [getTimeoutMs, promptOpenWingetInstallPage, requestWingetInstallMethod, startTerminalCountdown, stopTerminalCountdown]
+    [getTimeoutMs, promptOpenWingetInstallPage, requestWingetInstallMethod, startTerminalCountdown, stopTerminalCountdown, wait]
   );
 
   const ensurePs1PolicyReady = useCallback(
@@ -1596,6 +1687,57 @@ export function HomePage() {
     [appendTerminalPanelOutput, runTerminalScriptAndWait]
   );
 
+  const pollWithCountdown = useCallback(
+    async <T,>({
+      label,
+      timeoutMs,
+      verify,
+      isSuccess,
+      onAttempt,
+      shouldContinue,
+      waitForNextAttempt
+    }: VerificationLoopOptions<T>): Promise<VerificationLoopResult<T>> => {
+      const deadline = Date.now() + timeoutMs;
+      let lastResult: T | null = null;
+      startTerminalCountdown(label, timeoutMs);
+      try {
+        while (Date.now() < deadline) {
+          if (shouldContinue && !shouldContinue()) {
+            return { status: "cancelled", lastResult };
+          }
+
+          try {
+            const current = await verify();
+            lastResult = current;
+            onAttempt?.(current);
+            if (isSuccess(current)) {
+              return { status: "success", result: current, lastResult: current };
+            }
+          } catch (error) {
+            return { status: "error", error, lastResult };
+          }
+
+          const remainingMs = deadline - Date.now();
+          if (remainingMs <= 0) {
+            break;
+          }
+
+          const shouldKeepPolling = waitForNextAttempt
+            ? await waitForNextAttempt()
+            : await wait(Math.min(INSTALL_RECHECK_INTERVAL_MS, remainingMs)).then(() => true);
+          if (!shouldKeepPolling || (shouldContinue && !shouldContinue())) {
+            return { status: "cancelled", lastResult };
+          }
+        }
+
+        return { status: "timeout", lastResult };
+      } finally {
+        stopTerminalCountdown();
+      }
+    },
+    [startTerminalCountdown, stopTerminalCountdown, wait]
+  );
+
   const buildConfigWithCliDetected = useCallback(
     (base: AppConfig, key: CliKey, detected: boolean): AppConfig =>
       normalizeLockedConfig({
@@ -1695,85 +1837,81 @@ export function HomePage() {
   const startInstallRecheck = useCallback(
     (key: CliKey, expectedDetected: boolean, mode: InstallLaunchMode = "official") => {
       stopInstallPolling();
+      const runId = installPollRunIdRef.current + 1;
+      installPollRunIdRef.current = runId;
       installPollExpectedRef.current = expectedDetected;
       installAttemptContextRef.current = { key, expectedDetected, mode };
       setInstallingKey(key);
       const installRecheckTimeoutMs = getTimeoutMs("install_recheck_timeout_ms");
-      startTerminalCountdown(`${CLI_DEFAULT_TITLES[key]} ${expectedDetected ? "安装" : "卸载"}复检`, installRecheckTimeoutMs);
-      const startedAt = Date.now();
-
-      installPollTimerRef.current = window.setInterval(() => {
-        void (async () => {
-          try {
+      void (async () => {
+        const result = await pollWithCountdown<CliStatusMap>({
+          label: `${CLI_DEFAULT_TITLES[key]} ${expectedDetected ? "安装" : "卸载"}复检`,
+          timeoutMs: installRecheckTimeoutMs,
+          verify: async () => {
             const next = await detectClis();
             setStatuses(next);
+            return next;
+          },
+          isSuccess: (next) => next[key] === expectedDetected,
+          shouldContinue: () => installPollRunIdRef.current === runId,
+          waitForNextAttempt: () => waitForInstallPollDelay(runId)
+        });
 
-            if (next[key] === expectedDetected) {
-              installAttemptContextRef.current = null;
-              stopInstallPolling();
-              setWorking(true);
-              try {
-                const synced = await syncMenuAfterCliChange(key, expectedDetected, next);
-                await refreshCliUserPathStatuses();
-                if (synced) {
-                  scheduleTerminalAutoClose(3000);
-                }
-              } finally {
-                setWorking(false);
-              }
-              return;
-            }
+        if (result.status === "cancelled") {
+          return;
+        }
 
-            if (Date.now() - startedAt >= installRecheckTimeoutMs) {
-              const attemptContext = installAttemptContextRef.current;
-              installAttemptContextRef.current = null;
-              stopInstallPolling();
-              const actionLabel = expectedDetected ? "安装" : "卸载";
-              setLastResult({
-                ok: false,
-                code: expectedDetected ? "install_detect_timeout" : "uninstall_detect_timeout",
-                message: `${CLI_DEFAULT_TITLES[key]} ${actionLabel}后复检超时`,
-                detail: `请确认${actionLabel}命令是否已完成，并手动点击“刷新 CLI 检测”。`
-              });
-              if (
-                expectedDetected &&
-                attemptContext?.key === key &&
-                attemptContext.mode === "mirror" &&
-                isKimiMirrorInstallKey(key)
-              ) {
-                await requestMirrorFallbackRetry(key, "timeout");
-              }
+        const attemptContext = installAttemptContextRef.current;
+        stopInstallPolling();
+
+        if (result.status === "success") {
+          setWorking(true);
+          try {
+            const synced = await syncMenuAfterCliChange(key, expectedDetected, result.result);
+            await refreshCliUserPathStatuses();
+            if (synced) {
+              scheduleTerminalAutoClose(3000);
             }
-          } catch (error) {
-            const attemptContext = installAttemptContextRef.current;
-            installAttemptContextRef.current = null;
-            stopInstallPolling();
-            setLastResult({
-              ok: false,
-              code: expectedDetected ? "install_detect_failed" : "uninstall_detect_failed",
-              message: `${expectedDetected ? "安装" : "卸载"}后复检失败`,
-              detail: String(error)
-            });
-            if (
-              expectedDetected &&
-              attemptContext?.key === key &&
-              attemptContext.mode === "mirror" &&
-              isKimiMirrorInstallKey(key)
-            ) {
-              await requestMirrorFallbackRetry(key, "failed");
-            }
+          } finally {
+            setWorking(false);
           }
-        })();
-      }, INSTALL_RECHECK_INTERVAL_MS);
+          return;
+        }
+
+        if (result.status === "timeout") {
+          const actionLabel = expectedDetected ? "安装" : "卸载";
+          setLastResult({
+            ok: false,
+            code: expectedDetected ? "install_detect_timeout" : "uninstall_detect_timeout",
+            message: `${CLI_DEFAULT_TITLES[key]} ${actionLabel}后复检超时`,
+            detail: `请确认${actionLabel}命令是否已完成，并手动点击“刷新 CLI 检测”。`
+          });
+          if (expectedDetected && attemptContext?.key === key && attemptContext.mode === "mirror" && isKimiMirrorInstallKey(key)) {
+            await requestMirrorFallbackRetry(key, "timeout");
+          }
+          return;
+        }
+
+        setLastResult({
+          ok: false,
+          code: expectedDetected ? "install_detect_failed" : "uninstall_detect_failed",
+          message: `${expectedDetected ? "安装" : "卸载"}后复检失败`,
+          detail: String(result.error)
+        });
+        if (expectedDetected && attemptContext?.key === key && attemptContext.mode === "mirror" && isKimiMirrorInstallKey(key)) {
+          await requestMirrorFallbackRetry(key, "failed");
+        }
+      })();
     },
     [
       getTimeoutMs,
+      pollWithCountdown,
       refreshCliUserPathStatuses,
       requestMirrorFallbackRetry,
       scheduleTerminalAutoClose,
-      startTerminalCountdown,
       stopInstallPolling,
-      syncMenuAfterCliChange
+      syncMenuAfterCliChange,
+      waitForInstallPollDelay
     ]
   );
 
@@ -2472,7 +2610,6 @@ export function HomePage() {
       setTerminalState("running");
 
       try {
-        const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
         const scriptTimeoutMs = getTimeoutMs("terminal_script_timeout_ms");
         const quickDetectTimeoutMs = getTimeoutMs("quick_setup_detect_timeout_ms");
         const mirrorProbeTimeoutMs = getTimeoutMs("mirror_probe_timeout_ms");
@@ -2613,7 +2750,7 @@ export function HomePage() {
                 key,
                 phase: "failed",
                 running: false,
-                message: "内置终端执行 uv 安装命令失败",
+                message: describeTerminalExecutionFailure(" uv 安装命令", uvScriptResult),
                 detail: uvScriptResult.detail ?? null
               });
               setLastResult({
@@ -2663,20 +2800,34 @@ export function HomePage() {
           }
 
           setQuickPhase("verify_uv", "正在检测 uv 是否可用...");
-          startTerminalCountdown("uv 安装复检", quickDetectTimeoutMs);
-          try {
-            const uvStartedAt = Date.now();
-            while (Date.now() - uvStartedAt < quickDetectTimeoutMs) {
+          const uvVerifyResult = await pollWithCountdown<InstallPrereqStatus>({
+            label: "uv 安装复检",
+            timeoutMs: quickDetectTimeoutMs,
+            verify: async () => {
               const nextPrereq = await getInstallPrereqStatus();
               setInstallPrereq(nextPrereq);
-              if (nextPrereq.uv) {
-                uvReady = true;
-                break;
-              }
-              await wait(INSTALL_RECHECK_INTERVAL_MS);
-            }
-          } finally {
-            stopTerminalCountdown();
+              return nextPrereq;
+            },
+            isSuccess: (nextPrereq) => nextPrereq.uv
+          });
+
+          if (uvVerifyResult.status === "success") {
+            uvReady = true;
+          } else if (uvVerifyResult.status === "error") {
+            setQuickSetup({
+              key,
+              phase: "failed",
+              running: false,
+              message: "uv 安装后复检失败",
+              detail: String(uvVerifyResult.error)
+            });
+            setLastResult({
+              ok: false,
+              code: "quick_setup_uv_verify_failed",
+              message: "快速安装向导 uv 复检失败",
+              detail: String(uvVerifyResult.error)
+            });
+            return;
           }
 
           if (!uvReady) {
@@ -2829,7 +2980,7 @@ export function HomePage() {
                 key,
                 phase: "failed",
                 running: false,
-                message: `内置终端执行 Python ${KIMI_TARGET_PYTHON_VERSION} 安装命令失败`,
+                message: describeTerminalExecutionFailure(` Python ${KIMI_TARGET_PYTHON_VERSION} 安装命令`, pythonInstallResult),
                 detail: pythonInstallResult.detail ?? null
               });
               setLastResult({
@@ -2882,25 +3033,15 @@ export function HomePage() {
               }
             } else {
               setQuickPhase("verify_python", `等待 Python ${KIMI_TARGET_PYTHON_VERSION} 安装检测结果...`);
-              const pythonStartedAt = Date.now();
-              let pythonDetected = false;
-              let lastPythonVerifyDetail: string | null = initialPythonVerify.detail ?? null;
-              startTerminalCountdown(`Python ${KIMI_TARGET_PYTHON_VERSION} 安装复检`, quickDetectTimeoutMs);
-              try {
-                while (Date.now() - pythonStartedAt < quickDetectTimeoutMs) {
-                  const verify = await verifyKimiPythonInstallation();
-                  lastPythonVerifyDetail = verify.detail ?? null;
-                  if (verify.ok) {
-                    pythonDetected = true;
-                    break;
-                  }
-                  await wait(INSTALL_RECHECK_INTERVAL_MS);
-                }
-              } finally {
-                stopTerminalCountdown();
-              }
+              const pythonVerifyResult = await pollWithCountdown<ActionResult>({
+                label: `Python ${KIMI_TARGET_PYTHON_VERSION} 安装复检`,
+                timeoutMs: quickDetectTimeoutMs,
+                verify: verifyKimiPythonInstallation,
+                isSuccess: (verify) => verify.ok
+              });
 
-              if (!pythonDetected) {
+              if (pythonVerifyResult.status === "timeout") {
+                const lastPythonVerifyDetail = pythonVerifyResult.lastResult?.detail ?? initialPythonVerify.detail ?? null;
                 setQuickSetup({
                   key,
                   phase: "failed",
@@ -2913,6 +3054,23 @@ export function HomePage() {
                   code: "quick_setup_python_verify_failed",
                   message: "快速安装向导 Python 复检未通过",
                   detail: lastPythonVerifyDetail
+                });
+                return;
+              }
+
+              if (pythonVerifyResult.status === "error") {
+                setQuickSetup({
+                  key,
+                  phase: "failed",
+                  running: false,
+                  message: `Python ${KIMI_TARGET_PYTHON_VERSION} 安装后复检失败`,
+                  detail: String(pythonVerifyResult.error)
+                });
+                setLastResult({
+                  ok: false,
+                  code: "quick_setup_python_verify_failed",
+                  message: "快速安装向导 Python 复检失败",
+                  detail: String(pythonVerifyResult.error)
                 });
                 return;
               }
@@ -3001,7 +3159,7 @@ export function HomePage() {
               key,
               phase: "failed",
               running: false,
-              message: "内置终端执行 Kimi 安装命令失败",
+              message: describeTerminalExecutionFailure(" Kimi 安装命令", kimiInstallResult),
               detail: kimiInstallResult.detail ?? null
             });
             setLastResult({
@@ -3026,25 +3184,15 @@ export function HomePage() {
           });
 
           setQuickPhase("verify_kimi", "等待 Kimi 安装检测结果...");
-          const kimiStartedAt = Date.now();
-          let kimiDetected = false;
-          let lastVerifyDetail: string | null = null;
-          startTerminalCountdown("Kimi 安装复检", quickDetectTimeoutMs);
-          try {
-            while (Date.now() - kimiStartedAt < quickDetectTimeoutMs) {
-              const verify = await verifyKimiInstallation();
-              lastVerifyDetail = verify.detail ?? null;
-              if (verify.ok) {
-                kimiDetected = true;
-                break;
-              }
-              await wait(INSTALL_RECHECK_INTERVAL_MS);
-            }
-          } finally {
-            stopTerminalCountdown();
-          }
+          const kimiVerifyResult = await pollWithCountdown<ActionResult>({
+            label: "Kimi 安装复检",
+            timeoutMs: quickDetectTimeoutMs,
+            verify: verifyKimiInstallation,
+            isSuccess: (verify) => verify.ok
+          });
 
-          if (!kimiDetected) {
+          if (kimiVerifyResult.status === "timeout") {
+            const lastVerifyDetail = kimiVerifyResult.lastResult?.detail ?? null;
             setQuickSetup({
               key,
               phase: "failed",
@@ -3057,6 +3205,23 @@ export function HomePage() {
               code: "quick_setup_kimi_verify_timeout",
               message: "快速安装向导 Kimi 复检超时",
               detail: lastVerifyDetail
+            });
+            return;
+          }
+
+          if (kimiVerifyResult.status === "error") {
+            setQuickSetup({
+              key,
+              phase: "failed",
+              running: false,
+              message: "Kimi 安装后复检失败",
+              detail: String(kimiVerifyResult.error)
+            });
+            setLastResult({
+              ok: false,
+              code: "quick_setup_kimi_verify_failed",
+              message: "快速安装向导 Kimi 复检失败",
+              detail: String(kimiVerifyResult.error)
             });
             return;
           }
@@ -3167,7 +3332,7 @@ export function HomePage() {
             key,
             phase: "failed",
             running: false,
-            message: "内置终端执行安装命令失败",
+            message: describeTerminalExecutionFailure("安装命令", installScriptResult),
             detail: installScriptResult.detail ?? null
           });
           setLastResult(installScriptResult);
@@ -3181,35 +3346,44 @@ export function HomePage() {
         });
 
         setQuickPhase("detect", "等待安装检测结果...");
-        const startedAt = Date.now();
-        let detected = false;
-        startTerminalCountdown(`${hint.display_name} 安装复检`, quickDetectTimeoutMs);
-        try {
-          while (Date.now() - startedAt < quickDetectTimeoutMs) {
-            const verify = await runCliVerify(key);
-            if (verify.ok) {
-              detected = true;
-              break;
-            }
-            await new Promise((resolve) => window.setTimeout(resolve, INSTALL_RECHECK_INTERVAL_MS));
-          }
-        } finally {
-          stopTerminalCountdown();
-        }
+        const quickSetupVerifyResult = await pollWithCountdown<ActionResult>({
+          label: `${hint.display_name} 安装复检`,
+          timeoutMs: quickDetectTimeoutMs,
+          verify: () => runCliVerify(key),
+          isSuccess: (verify) => verify.ok
+        });
 
-        if (!detected) {
+        if (quickSetupVerifyResult.status === "timeout") {
+          const lastVerifyDetail = quickSetupVerifyResult.lastResult?.detail ?? null;
           setQuickSetup({
             key,
             phase: "failed",
             running: false,
             message: "安装后复检超时",
-            detail: "请检查终端输出，完成后可点击重试。"
+            detail: lastVerifyDetail ?? "请检查终端输出，完成后可点击重试。"
           });
           setLastResult({
             ok: false,
             code: "quick_setup_detect_timeout",
             message: "快速安装向导复检超时",
-            detail: null
+            detail: lastVerifyDetail
+          });
+          return;
+        }
+
+        if (quickSetupVerifyResult.status === "error") {
+          setQuickSetup({
+            key,
+            phase: "failed",
+            running: false,
+            message: "安装后复检失败",
+            detail: String(quickSetupVerifyResult.error)
+          });
+          setLastResult({
+            ok: false,
+            code: "quick_setup_detect_failed",
+            message: "快速安装向导复检失败",
+            detail: String(quickSetupVerifyResult.error)
           });
           return;
         }
@@ -3319,11 +3493,10 @@ export function HomePage() {
       runAction,
       runTerminalCommandsSequentially,
       runTerminalScriptAndWait,
-      scheduleTerminalAutoClose,
+      pollWithCountdown,
       setQuickPhase,
-      startTerminalCountdown,
-      stopTerminalCountdown,
-      verifyKimiInstallation
+      verifyKimiInstallation,
+      verifyKimiPythonInstallation
     ]
   );
 
@@ -3849,6 +4022,7 @@ export function HomePage() {
                 orderedCliKeys={orderedCliKeys}
                 displayNames={config.display_names}
                 toggles={config.toggles}
+                fixedLaunchModes={config.fixed_launch_modes}
                 statuses={statuses}
                 installHints={installHints}
                 cliUserPathStatuses={cliUserPathStatuses}
@@ -3868,6 +4042,8 @@ export function HomePage() {
                 }
                 onSetDisplayName={setDisplayName}
                 onSetToggle={setToggle}
+                onSetFixedLaunchModeDisplayName={setFixedLaunchModeDisplayName}
+                onSetFixedLaunchModeEnabled={setFixedLaunchModeEnabled}
                 onCopyInstallCommand={onCopyInstallCommand}
                 onOpenInstallDocs={onOpenInstallDocs}
                 onOpenNodejsDownload={onOpenNodejsDownload}

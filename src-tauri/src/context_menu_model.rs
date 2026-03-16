@@ -76,6 +76,13 @@ struct CliSpec {
     command: &'static str,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FixedLaunchModeSpec {
+    key: &'static str,
+    parent_key: &'static str,
+    command: &'static str,
+}
+
 const CLI_SPECS: [CliSpec; 7] = [
     CliSpec {
         key: "claude",
@@ -107,8 +114,34 @@ const CLI_SPECS: [CliSpec; 7] = [
     },
 ];
 
+const FIXED_LAUNCH_MODE_SPECS: [FixedLaunchModeSpec; 3] = [
+    FixedLaunchModeSpec {
+        key: "claude_skip_permissions",
+        parent_key: "claude",
+        command: "claude --dangerously-skip-permissions",
+    },
+    FixedLaunchModeSpec {
+        key: "gemini_yolo",
+        parent_key: "gemini",
+        command: "gemini --yolo",
+    },
+    FixedLaunchModeSpec {
+        key: "codex_yolo",
+        parent_key: "codex",
+        command: "codex --yolo",
+    },
+];
+
 fn cli_spec(key: &str) -> Option<CliSpec> {
     CLI_SPECS.iter().copied().find(|spec| spec.key == key)
+}
+
+fn fixed_launch_mode_specs_for_parent(key: &str) -> Vec<FixedLaunchModeSpec> {
+    FIXED_LAUNCH_MODE_SPECS
+        .iter()
+        .copied()
+        .filter(|spec| spec.parent_key == key)
+        .collect()
 }
 
 fn cli_enabled(config: &AppConfig, key: &str) -> bool {
@@ -150,6 +183,30 @@ fn cli_title(config: &AppConfig, key: &str) -> Option<String> {
     }
 }
 
+fn fixed_launch_mode_enabled(config: &AppConfig, key: &str) -> bool {
+    match key {
+        "claude_skip_permissions" => config.fixed_launch_modes.claude_skip_permissions.enabled,
+        "gemini_yolo" => config.fixed_launch_modes.gemini_yolo.enabled,
+        "codex_yolo" => config.fixed_launch_modes.codex_yolo.enabled,
+        _ => false,
+    }
+}
+
+fn fixed_launch_mode_title(config: &AppConfig, key: &str) -> Option<String> {
+    match key {
+        "claude_skip_permissions" => Some(
+            config
+                .fixed_launch_modes
+                .claude_skip_permissions
+                .display_name
+                .clone(),
+        ),
+        "gemini_yolo" => Some(config.fixed_launch_modes.gemini_yolo.display_name.clone()),
+        "codex_yolo" => Some(config.fixed_launch_modes.codex_yolo.display_name.clone()),
+        _ => None,
+    }
+}
+
 fn default_targets() -> Vec<ShellTarget> {
     vec![
         ShellTarget::DirectoryBackground,
@@ -179,7 +236,8 @@ fn build_context_menu_plan_inner(config: &AppConfig) -> AppResult<ContextMenuPla
         let Some(title) = cli_title(config, key.as_str()) else {
             continue;
         };
-        let order = ((index + 1) * 10) as u16;
+        let order_base = ((index + 1) * 10) as u16;
+        let icon = Some(context_menu_icons::item_icon_value(spec.key)?);
         let (runner, final_command) = command_launcher::build_final_command(
             config.terminal_mode,
             spec.command,
@@ -189,13 +247,39 @@ fn build_context_menu_plan_inner(config: &AppConfig) -> AppResult<ContextMenuPla
             item_id: spec.key.to_string(),
             cli_id: spec.key.to_string(),
             title,
-            order,
+            order: order_base,
             enabled: true,
-            icon: Some(context_menu_icons::item_icon_value(spec.key)?),
+            icon: icon.clone(),
             runner,
             cli_command: spec.command.to_string(),
             final_command,
         });
+
+        for (offset, fixed_mode) in fixed_launch_mode_specs_for_parent(spec.key)
+            .into_iter()
+            .filter(|fixed_mode| fixed_launch_mode_enabled(config, fixed_mode.key))
+            .enumerate()
+        {
+            let Some(title) = fixed_launch_mode_title(config, fixed_mode.key) else {
+                continue;
+            };
+            let (runner, final_command) = command_launcher::build_final_command(
+                config.terminal_mode,
+                fixed_mode.command,
+                DEFAULT_WORKING_DIR_ARG,
+            )?;
+            items.push(MenuItemPlan {
+                item_id: fixed_mode.key.to_string(),
+                cli_id: spec.key.to_string(),
+                title,
+                order: order_base + offset as u16 + 1,
+                enabled: true,
+                icon: icon.clone(),
+                runner,
+                cli_command: fixed_mode.command.to_string(),
+                final_command,
+            });
+        }
     }
 
     if items.is_empty() {
@@ -219,10 +303,7 @@ fn build_context_menu_plan_inner(config: &AppConfig) -> AppResult<ContextMenuPla
     })
 }
 
-pub fn filter_config_by_detected_clis(
-    config: &AppConfig,
-    statuses: &CliStatusMap,
-) -> AppConfig {
+pub fn filter_config_by_detected_clis(config: &AppConfig, statuses: &CliStatusMap) -> AppConfig {
     let mut filtered = config.clone();
     filtered.toggles.claude &= cli_detected(statuses, "claude");
     filtered.toggles.codex &= cli_detected(statuses, "codex");
@@ -287,7 +368,14 @@ mod tests {
         let mut config = AppConfig::default();
         config.toggles.claude = false;
         let plan = build_context_menu_plan(&config).expect("plan");
-        assert!(!plan.groups[0].items.iter().any(|item| item.item_id == "claude"));
+        assert!(!plan.groups[0]
+            .items
+            .iter()
+            .any(|item| item.item_id == "claude"));
+        assert!(!plan.groups[0]
+            .items
+            .iter()
+            .any(|item| item.item_id == "claude_skip_permissions"));
     }
 
     #[test]
@@ -335,6 +423,79 @@ mod tests {
     }
 
     #[test]
+    fn should_append_fixed_launch_modes_after_parent_item() {
+        let config = AppConfig::default();
+        let plan = build_context_menu_plan(&config).expect("plan");
+        let item_ids = plan.groups[0]
+            .items
+            .iter()
+            .map(|item| item.item_id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            item_ids[..6],
+            [
+                "claude",
+                "claude_skip_permissions",
+                "codex",
+                "codex_yolo",
+                "gemini",
+                "gemini_yolo"
+            ]
+        );
+    }
+
+    #[test]
+    fn should_build_fixed_launch_mode_commands_with_expected_args() {
+        let config = AppConfig::default();
+        let plan = build_context_menu_plan(&config).expect("plan");
+        let claude = plan.groups[0]
+            .items
+            .iter()
+            .find(|item| item.item_id == "claude_skip_permissions")
+            .expect("claude fixed launch mode");
+        let gemini = plan.groups[0]
+            .items
+            .iter()
+            .find(|item| item.item_id == "gemini_yolo")
+            .expect("gemini fixed launch mode");
+        let codex = plan.groups[0]
+            .items
+            .iter()
+            .find(|item| item.item_id == "codex_yolo")
+            .expect("codex fixed launch mode");
+
+        assert_eq!(claude.cli_command, "claude --dangerously-skip-permissions");
+        assert!(claude
+            .final_command
+            .contains("claude --dangerously-skip-permissions"));
+        assert_eq!(gemini.cli_command, "gemini --yolo");
+        assert!(gemini.final_command.contains("gemini --yolo"));
+        assert_eq!(codex.cli_command, "codex --yolo");
+        assert!(codex.final_command.contains("codex --yolo"));
+    }
+
+    #[test]
+    fn should_inherit_parent_icon_for_fixed_launch_modes() {
+        let config = AppConfig::default();
+        let plan = build_context_menu_plan(&config).expect("plan");
+        let parent_icon = plan.groups[0]
+            .items
+            .iter()
+            .find(|item| item.item_id == "claude")
+            .and_then(|item| item.icon.clone())
+            .expect("claude icon");
+        let child_icon = plan.groups[0]
+            .items
+            .iter()
+            .find(|item| item.item_id == "claude_skip_permissions")
+            .and_then(|item| item.icon.clone())
+            .expect("claude child icon");
+
+        assert_eq!(parent_icon, child_icon);
+    }
+
+    #[test]
     fn should_skip_undetected_clis_when_building_plan_for_detected_statuses() {
         let config = AppConfig::default();
         let statuses = detected_statuses_for(&["claude", "codex"]);
@@ -346,7 +507,10 @@ mod tests {
             .iter()
             .map(|item| item.item_id.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(item_ids, vec!["claude", "codex"]);
+        assert_eq!(
+            item_ids,
+            vec!["claude", "claude_skip_permissions", "codex", "codex_yolo"]
+        );
     }
 
     #[test]
@@ -354,15 +518,18 @@ mod tests {
         let mut config = AppConfig::default();
         config.menu_title = "我的 AI CLIs".to_string();
         config.display_names.codex = "OpenAI Codex".to_string();
+        config.fixed_launch_modes.codex_yolo.display_name = "Codex (YOLO Fast)".to_string();
         let statuses = detected_statuses_for(&["codex"]);
 
         let filtered = filter_config_by_detected_clis(&config, &statuses);
         let plan = build_context_menu_plan(&filtered).expect("plan");
 
         assert_eq!(plan.groups[0].title, "我的 AI CLIs");
-        assert_eq!(plan.groups[0].items.len(), 1);
+        assert_eq!(plan.groups[0].items.len(), 2);
         assert_eq!(plan.groups[0].items[0].item_id, "codex");
         assert_eq!(plan.groups[0].items[0].title, "OpenAI Codex");
+        assert_eq!(plan.groups[0].items[1].item_id, "codex_yolo");
+        assert_eq!(plan.groups[0].items[1].title, "Codex (YOLO Fast)");
     }
 
     #[test]

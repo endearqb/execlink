@@ -1,15 +1,13 @@
 use serde::Serialize;
 
 use crate::{
-    detect,
     context_menu_builder::{build_registry_write_plan, RegistryWritePlan},
     context_menu_icons,
-    context_menu_model::{build_context_menu_plan, filter_config_by_detected_clis, ContextMenuPlan},
-    context_menu_registry,
-    shell_notify,
-    state::{
-        self, AppConfig, AppResult, ContextMenuStatus, InstalledMenuGroup, LegacyArtifact,
+    context_menu_model::{
+        build_context_menu_plan, filter_config_by_detected_clis, ContextMenuPlan,
     },
+    context_menu_registry, detect, shell_notify,
+    state::{self, AppConfig, AppResult, ContextMenuStatus, InstalledMenuGroup, LegacyArtifact},
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -84,7 +82,10 @@ pub fn inspect_context_menu_status() -> AppResult<ContextMenuStatus> {
         current_group_id: Some(first.group_id.clone()),
         current_group_title: Some(first.title.clone()),
         message: if legacy.is_empty() {
-            format!("已应用 ExecLink v2 右键菜单（{} 个作用域）", first.roots.len())
+            format!(
+                "已应用 ExecLink v2 右键菜单（{} 个作用域）",
+                first.roots.len()
+            )
         } else {
             format!(
                 "已应用 ExecLink v2 右键菜单，同时检测到 {} 个 legacy 菜单残留",
@@ -138,7 +139,10 @@ pub fn migrate_legacy_to_v2(config: &AppConfig) -> AppResult<MigrationReport> {
         let _ = context_menu_registry::remove_all_v2_groups();
         return Err(error);
     }
-    let legacy_paths = legacy.iter().map(|artifact| artifact.path.clone()).collect::<Vec<_>>();
+    let legacy_paths = legacy
+        .iter()
+        .map(|artifact| artifact.path.clone())
+        .collect::<Vec<_>>();
     let migrated_legacy_paths = context_menu_registry::remove_explicit_paths(&legacy_paths)?;
     Ok(MigrationReport {
         migrated_legacy_paths,
@@ -161,8 +165,12 @@ pub fn cleanup_nilesoft_artifacts() -> AppResult<CleanupSummary> {
     let mut removed_runtime_dirs = 0usize;
     let nilesoft_root = state::nilesoft_root_dir()?;
     if nilesoft_root.exists() {
-        std::fs::remove_dir_all(&nilesoft_root)
-            .map_err(|error| format!("删除旧 Nilesoft 目录失败 {}: {error}", nilesoft_root.display()))?;
+        std::fs::remove_dir_all(&nilesoft_root).map_err(|error| {
+            format!(
+                "删除旧 Nilesoft 目录失败 {}: {error}",
+                nilesoft_root.display()
+            )
+        })?;
         removed_runtime_dirs += 1;
     }
     let removed_registry_paths = remove_all_context_menus()?;

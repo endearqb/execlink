@@ -45,9 +45,18 @@ pub fn enable() -> AppResult<Win11ClassicMenuStatus> {
     logging::log_line("[win11-classic-menu] enabling classic context menu override");
     let (key, _) = hkcu()
         .create_subkey(CLASSIC_MENU_INPROC_PATH)
-        .map_err(|error| format!("创建 Win11 经典菜单注册表项失败 {}: {error}", full_hkcu_path()))?;
-    key.set_value("", &"")
-        .map_err(|error| format!("写入 Win11 经典菜单默认值失败 {}: {error}", full_hkcu_path()))?;
+        .map_err(|error| {
+            format!(
+                "创建 Win11 经典菜单注册表项失败 {}: {error}",
+                full_hkcu_path()
+            )
+        })?;
+    key.set_value("", &"").map_err(|error| {
+        format!(
+            "写入 Win11 经典菜单默认值失败 {}: {error}",
+            full_hkcu_path()
+        )
+    })?;
     shell_notify::notify_shell_changed()?;
     inspect_status()
 }
@@ -57,10 +66,7 @@ pub fn disable() -> AppResult<Win11ClassicMenuStatus> {
     let parent = CLASSIC_MENU_PARENT_PATH;
     if hkcu().open_subkey_with_flags(parent, KEY_READ).is_ok() {
         hkcu().delete_subkey_all(parent).map_err(|error| {
-            format!(
-                "删除 Win11 经典菜单注册表项失败 HKCU\\{}: {error}",
-                parent
-            )
+            format!("删除 Win11 经典菜单注册表项失败 HKCU\\{}: {error}", parent)
         })?;
     }
     shell_notify::notify_shell_changed()?;

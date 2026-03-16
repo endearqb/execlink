@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
+use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
 
 use crate::{logging, process_util, state::AppResult};
 

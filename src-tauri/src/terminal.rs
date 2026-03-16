@@ -189,7 +189,8 @@ pub fn detect_terminal_capabilities() -> TerminalCapabilities {
 
 pub fn build_launch_plan(config: &AppConfig) -> TerminalLaunchPlan {
     let capabilities = detect_terminal_capabilities();
-    let (effective_mode, fallback_reason) = resolve_terminal_mode(config.terminal_mode, &capabilities);
+    let (effective_mode, fallback_reason) =
+        resolve_terminal_mode(config.terminal_mode, &capabilities);
     let effective_executable = match effective_mode {
         TerminalMode::Pwsh => PWSH_EXECUTABLE.to_string(),
         TerminalMode::Powershell => POWERSHELL_EXECUTABLE.to_string(),
@@ -306,7 +307,10 @@ fn resolve_terminal_mode(
         } else if capabilities.powershell {
             (TerminalMode::Powershell, Some(reason.to_string()))
         } else {
-            (TerminalMode::Powershell, Some("no_powershell_detected".to_string()))
+            (
+                TerminalMode::Powershell,
+                Some("no_powershell_detected".to_string()),
+            )
         }
     };
 
@@ -377,7 +381,8 @@ fn default_light_theme() -> &'static ThemeSpec {
 }
 
 fn resolve_theme(config: &AppConfig) -> &'static ThemeSpec {
-    let requested = find_theme(config.terminal_theme_id.as_str()).unwrap_or_else(default_dark_theme);
+    let requested =
+        find_theme(config.terminal_theme_id.as_str()).unwrap_or_else(default_dark_theme);
     match config.terminal_theme_mode {
         TerminalThemeMode::Auto => requested,
         TerminalThemeMode::Dark => {
@@ -441,7 +446,7 @@ fn build_prompt_statement(theme: &ThemeSpec) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{CliDisplayNames, CliToggles, RuntimeState, CONFIG_VERSION};
+    use crate::state::{CliDisplayNames, CliToggles, FixedLaunchModes, RuntimeState, CONFIG_VERSION};
 
     fn sample_config() -> AppConfig {
         AppConfig {
@@ -467,6 +472,7 @@ mod tests {
             use_windows_terminal: false,
             no_exit: true,
             toggles: CliToggles::default(),
+            fixed_launch_modes: FixedLaunchModes::default(),
             runtime: RuntimeState::default(),
         }
     }
@@ -523,5 +529,4 @@ mod tests {
         let plan = build_launch_plan(&config);
         assert_eq!(plan.menu_mode(), "minimal");
     }
-
 }

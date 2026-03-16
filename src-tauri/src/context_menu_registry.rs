@@ -48,9 +48,12 @@ fn set_registry_value(key: &RegKey, value: &RegistryValueSpec) -> AppResult<()> 
 }
 
 fn create_key(key_spec: &RegistryKeySpec) -> AppResult<()> {
-    let (key, _) = hkcu()
-        .create_subkey(&key_spec.path)
-        .map_err(|error| format!("创建注册表项失败 {}: {error}", full_hkcu_path(&key_spec.path)))?;
+    let (key, _) = hkcu().create_subkey(&key_spec.path).map_err(|error| {
+        format!(
+            "创建注册表项失败 {}: {error}",
+            full_hkcu_path(&key_spec.path)
+        )
+    })?;
     for value in &key_spec.values {
         set_registry_value(&key, value)?;
     }
@@ -110,7 +113,12 @@ pub fn verify_registry_write_plan(plan: &RegistryWritePlan) -> AppResult<()> {
     for key_spec in &plan.creates {
         let key = hkcu()
             .open_subkey_with_flags(&key_spec.path, KEY_READ)
-            .map_err(|error| format!("验证注册表项失败 {}: {error}", full_hkcu_path(&key_spec.path)))?;
+            .map_err(|error| {
+                format!(
+                    "验证注册表项失败 {}: {error}",
+                    full_hkcu_path(&key_spec.path)
+                )
+            })?;
         for value in &key_spec.values {
             let name = value.name.as_deref().unwrap_or("");
             let actual = if name.is_empty() {
@@ -165,7 +173,8 @@ pub fn list_installed_menu_groups() -> AppResult<Vec<InstalledMenuGroup>> {
             let Ok(group_key) = root.open_subkey_with_flags(&key_name, KEY_READ) else {
                 continue;
             };
-            if read_optional_string(&group_key, "Execlink.Owner").as_deref() != Some(EXECLINK_OWNER) {
+            if read_optional_string(&group_key, "Execlink.Owner").as_deref() != Some(EXECLINK_OWNER)
+            {
                 continue;
             }
             if read_optional_string(&group_key, "Execlink.SchemaVersion").as_deref()
@@ -173,8 +182,8 @@ pub fn list_installed_menu_groups() -> AppResult<Vec<InstalledMenuGroup>> {
             {
                 continue;
             }
-            let group_id =
-                read_optional_string(&group_key, "Execlink.GroupId").unwrap_or_else(|| key_name.clone());
+            let group_id = read_optional_string(&group_key, "Execlink.GroupId")
+                .unwrap_or_else(|| key_name.clone());
             let title = read_optional_string(&group_key, "Execlink.GroupTitle")
                 .or_else(|| read_optional_string(&group_key, "MUIVerb"))
                 .unwrap_or_else(|| group_id.clone());
@@ -187,7 +196,11 @@ pub fn list_installed_menu_groups() -> AppResult<Vec<InstalledMenuGroup>> {
                     item_ids: Vec::new(),
                     schema_version: EXECLINK_SCHEMA_VERSION,
                 });
-            if !entry.roots.iter().any(|root_id| root_id == target.target_id()) {
+            if !entry
+                .roots
+                .iter()
+                .any(|root_id| root_id == target.target_id())
+            {
                 entry.roots.push(target.target_id().to_string());
             }
             for item_id in read_item_ids(&group_key) {
@@ -261,7 +274,8 @@ pub fn detect_legacy_artifacts() -> AppResult<Vec<LegacyArtifact>> {
             let Some(reason) = legacy_candidate_reason(&joined) else {
                 continue;
             };
-            let title = read_optional_string(&base_key, "MUIVerb").unwrap_or_else(|| key_name.clone());
+            let title =
+                read_optional_string(&base_key, "MUIVerb").unwrap_or_else(|| key_name.clone());
             artifacts.push(LegacyArtifact {
                 path: format!(r"{}\{}", full_hkcu_path(root_path), key_name),
                 title,
